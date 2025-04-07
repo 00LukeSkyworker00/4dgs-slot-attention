@@ -1,4 +1,6 @@
 import os
+import shutil
+import glob
 import argparse
 from dataset import *
 from model import *
@@ -7,6 +9,7 @@ import time
 import datetime
 import torch.optim as optim
 import torch
+from omegaconf import OmegaConf
 
 import torch.multiprocessing as mp
 from torch.utils.data import ConcatDataset
@@ -18,13 +21,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def Trainer(rank, world_size, opt):
+def Trainer(rank, world_size, cfg):
 
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12355"
-
-    # Setup tensorboard
-    writer = SummaryWriter(f'./logs/{opt.output_dir}_{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}')
 
     # Set device for each process
     torch.cuda.set_device(rank)
@@ -33,21 +33,21 @@ def Trainer(rank, world_size, opt):
     # Initialize process group for DDP
     init_process_group(backend='nccl', rank=rank, world_size=world_size)
 
-    resolution = (128, 128)
-
     train_list = []
-
-    for i in range(11, 51):
-        train_set = ShapeOfMotion(os.path.join(opt.data_dir,f'movi_a_00{i}_anoMask'))
+    for i in range(cfg.dataset.start_idx, cfg.dataset.end_idx+1):
+        path = os.path.join(cfg.dataset.dir,f'movi_a_{i:04}_anoMask')
+        if not os.path.exists(path):
+            print(f"Path does not exist: {path}")
+            continue
+        train_set = ShapeOfMotion(path, cfg.dataset)
         train_list.append(train_set)
         # print(train_set[0]['fg_gs'].shape)
-    
     train_set = ConcatDataset(train_list)
     # train_set = ShapeOfMotion(opt.data_dir)
     print(f"Number of scene in concat dataset: {len(train_set)}")
 
-    model = SlotAttentionAutoEncoder(resolution, opt.num_slots, opt.num_iterations, 14)
-    # model = SlotAttentionAutoEncoder(resolution, opt.num_slots, opt.num_iterations, opt.hid_dim)
+    # model = SlotAttentionAutoEncoder(resolution, opt.num_slots, opt.num_iters, train_set[0]['all_gs'].size(-1))
+    model = SlotAttentionAutoEncoder(cfg.dataset, cfg.cnn, cfg.attention)
     # model.load_state_dict(torch.load('./tmp/model6.ckpt')['model_state_dict'])
     model = model.to(device)
 
@@ -59,11 +59,11 @@ def Trainer(rank, world_size, opt):
 
     # Define optimizer
     params = [{'params': model.parameters()}]
-    optimizer = optim.Adam(params, lr=opt.learning_rate)
+    optimizer = optim.Adam(params, lr=cfg.training.lr)
 
     # Check for existing checkpoint
     start_epoch = 0
-    checkpoint_path = os.path.join(opt.output_dir, 'last.ckpt')
+    checkpoint_path = os.path.join(cfg.output.dir,'checkpoints', 'last.ckpt')
 
     if os.path.exists(checkpoint_path):
         print(f"Rank {rank}: Loading checkpoint from {checkpoint_path}")
@@ -74,17 +74,22 @@ def Trainer(rank, world_size, opt):
 
     # Create DataLoader with DistributedSampler
     train_sampler = DistributedSampler(train_set, num_replicas=world_size, rank=rank,
-        shuffle=True, seed=opt.seed)
+        shuffle=True, seed=cfg.training.seed)
     train_dataloader = torch.utils.data.DataLoader(
-        train_set, batch_size=opt.batch_size, num_workers=opt.num_workers,
+        train_set, batch_size=cfg.training.batch_size, num_workers=cfg.training.num_workers,
         sampler=train_sampler, collate_fn=collate_fn_padd
         )
+    
+    # Setup tensorboard and save environment
+    if rank == 0:
+        writer = SummaryWriter(os.path.join(cfg.output.dir, 'logs'))
+        save_env(cfg)
 
     start = time.time()
     i = start_epoch * len(train_dataloader)  # Resume step count
 
     try:
-        for epoch in range(start_epoch, opt.num_epochs):  # Resume from the saved epoch
+        for epoch in range(start_epoch, cfg.training.num_epochs):  # Resume from the saved epoch
             model.train()
 
             total_loss = 0
@@ -92,13 +97,13 @@ def Trainer(rank, world_size, opt):
             for sample in tqdm(train_dataloader):
                 i += 1
 
-                if i < opt.warmup_steps:
-                    learning_rate = opt.learning_rate * (i / opt.warmup_steps)
+                if i < cfg.training.warmup:
+                    learning_rate = cfg.training.lr * (i / cfg.training.warmup)
                 else:
-                    learning_rate = opt.learning_rate
+                    learning_rate = cfg.training.lr
 
-                learning_rate = learning_rate * (opt.decay_rate ** (
-                    i / opt.decay_steps))
+                learning_rate = learning_rate * (cfg.training.decay_rate ** (
+                    i / cfg.training.decay_steps))
                 
                 learning_rate *= world_size ** 0.5  # Scale by number of GPUs
 
@@ -108,10 +113,16 @@ def Trainer(rank, world_size, opt):
 
                 # Get inputs and lengths
                 gt_imgs = sample['gt_imgs'].to(device)
-                all_gs = sample['all_gs'].to(device)
+
+                if cfg.attention.use_all_gs:   
+                    gs = sample['all_gs'].to(device)
+                    mask = sample['all_mask'].to(device)
+                else:
+                    gs = sample['fg_gs'].to(device)
+                    mask = sample['fg_mask'].to(device)
 
                 # Forward pass through model
-                recon_combined, recons, masks, slots = model(all_gs, gt_imgs)
+                recon_combined, recons, masks, slots = model(gs, mask)
                 
                 # Loss calculation
                 loss = criterion(recon_combined, gt_imgs)
@@ -135,14 +146,13 @@ def Trainer(rank, world_size, opt):
                 
                 writer.add_scalar('Loss/train', total_loss, epoch)
 
-                if not epoch % 10:
-                    os.makedirs(opt.output_dir, exist_ok=True)
+                if not epoch % cfg.output.save_interval:
 
                     torch.save({
                         'epoch': epoch,  # Save the current epoch
                         'model_state_dict': model.module.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
-                    }, os.path.join(opt.output_dir, f'{epoch}.ckpt'))
+                    }, os.path.join(cfg.output.dir,'checkpoints', f'{epoch}.ckpt'))
 
                     torch.save({
                         'epoch': epoch,  # Save the last epoch for resuming
@@ -152,36 +162,58 @@ def Trainer(rank, world_size, opt):
 
                     print ("Save checkpoint at Epoch: {}, Loss: {}, Time: {}".format(epoch, total_loss,
                     datetime.timedelta(seconds=time.time() - start)))
+
     except KeyboardInterrupt:
         print(f"Process {rank} interrupted.")
     finally:
         destroy_process_group()
         print(f"Process {rank} cleaned up.")
+
+def save_env(cfg):
+    # Copy Python scripts to the output directory
+    script_folder = os.path.dirname(os.path.abspath(__file__))
+    python_files = glob.glob(os.path.join(script_folder, '*.py'))
+    for file in python_files:
+        shutil.copy(file, cfg.output.dir)
+
+    # Save the configuration file to the output directory
+    with open(os.path.join(cfg.output.dir, 'config.yaml'), 'w') as f:
+        OmegaConf.save(cfg, f)
         
 def main():
+    # Parse command line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument
-    parser.add_argument('--data_dir', default='./data', type=str, help='where to find the dataset' )
-    parser.add_argument('--output_dir', default='./tmp', type=str, help='where to save models' )
-    parser.add_argument('--seed', default=0, type=int, help='random seed')
-    parser.add_argument('--batch_size', default=16, type=int)
-    parser.add_argument('--num_slots', default=7, type=int, help='Number of slots in Slot Attention.')
-    parser.add_argument('--num_iterations', default=3, type=int, help='Number of attention iterations.')
-    parser.add_argument('--hid_img_dim', default=64, type=int, help='hidden dimension size')
-    parser.add_argument('--learning_rate', default=0.0004, type=float)
-    parser.add_argument('--warmup_steps', default=10000, type=int, help='Number of warmup steps for the learning rate.')
-    parser.add_argument('--decay_rate', default=0.5, type=float, help='Rate for the learning rate decay.')
-    parser.add_argument('--decay_steps', default=100000, type=int, help='Number of steps for the learning rate decay.')
-    parser.add_argument('--num_workers', default=4, type=int, help='number of workers for loading data')
-    parser.add_argument('--num_epochs', default=1000, type=int, help='number of training epochs.')
+    parser.add_argument('--data_dir', default='./data', type=str, help='Where to find the dataset.')
+    parser.add_argument('--output_dir', default='./tmp', type=str, help='Where to save model.')
+    parser.add_argument('--cfg', default='./configs/default.yaml', type=str, help='Where to load cfg.')
+    parser.add_argument('--seed', default=0, type=int, help='Set random seed for reproducibility.')
+    args = parser.parse_args()
 
-    opt = parser.parse_args()
+    # Load configuration file
+    cfg = OmegaConf.load(args.cfg)
+    cfg.dataset.dir = args.data_dir
+    cfg.output.dir = args.output_dir
+    cfg.training.seed = args.seed
+    
+    # # Index for output directory
+    # index = 0
+    # output_dir = cfg.output.dir + f'__{index:02}'
+    # while os.path.exists(output_dir):
+    #     index += 1
+    #     output_dir = cfg.output.dir + f'__{index:02}'
+    # cfg.output.dir = output_dir
+
+    # Create output directory
+    os.makedirs(cfg.output.dir, exist_ok=True)
+    os.makedirs(os.path.join(cfg.output.dir,'checkpoints'), exist_ok=True)
+    print(f"Output directory: {cfg.output.dir}")
 
     # Set random seed for reproducibility
-    torch.manual_seed(opt.seed)
+    torch.manual_seed(cfg.training.seed)
 
     world_size = torch.cuda.device_count()
-    mp.spawn(Trainer, args=(world_size, opt), nprocs=world_size, join=True)
+    mp.spawn(Trainer, args=(world_size, cfg), nprocs=world_size, join=True)
 
         
 if __name__ == '__main__':

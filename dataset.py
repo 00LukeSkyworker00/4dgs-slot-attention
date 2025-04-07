@@ -9,12 +9,12 @@ import roma
 from transforms import *
 
 import torch
-from torchvision import transforms
+# from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 
 class ShapeOfMotion(Dataset):
-    def __init__(self, data_dir, transform=None):        
+    def __init__(self, data_dir, data_cfg, transform=None):        
         self.data_dir = data_dir
         self.ckpt = torch.load(f"{data_dir}/checkpoints/last.ckpt") # If RAM OOM, could try dynamic load.
         self.img_dir = f"{data_dir}/images/"
@@ -22,6 +22,12 @@ class ShapeOfMotion(Dataset):
         self.frame_names = [os.path.splitext(p)[0] for p in sorted(os.listdir(self.img_dir))]
         self.imgs: list[torch.Tensor | None] = [None for _ in self.frame_names]
         self.transform = transform
+        self.use_xyz = bool(data_cfg.use_xyz)
+        self.use_rots = bool(data_cfg.use_rots)
+        self.use_scale = bool(data_cfg.use_scale)
+        self.use_opacity = bool(data_cfg.use_opacity)
+        self.use_color = bool(data_cfg.use_color)
+        self.use_motion = bool(data_cfg.use_motion)
 
     @property
     def num_frames(self) -> int:
@@ -59,45 +65,68 @@ class ShapeOfMotion(Dataset):
             quats_ts = quats_ts[:, 0]
         else:
             means_ts = means
-            quats_ts = quats      
+            quats_ts = quats
+         
+        result = []
+        if self.use_xyz:
+            result.append(means_ts)
+        if self.use_rots:
+            result.append(quats_ts)
+        if self.use_scale:
+            result.append(scales)
+        if self.use_opacity:
+            result.append(opacities)
+        if self.use_color:
+            result.append(colors)
+        if self.use_motion:
+            pass
 
-        # return torch.cat([t for t in (means_ts, quats_ts, colors)], dim=1) # truncated without norm
-        return torch.cat([t for t in (means_ts, quats_ts, scales, opacities, colors)], dim=1) # full without norm
-        return torch.cat([self.min_max_norm(t) for t in (means_ts, quats_ts, colors)], dim=1) # truncated
-        return torch.cat([self.min_max_norm(t) for t in (means_ts, quats_ts, scales, opacities, colors)], dim=1) # full
+        return torch.cat(result, dim=1)
     
     def get_all_3dgs(self, ts: torch.Tensor) -> torch.Tensor:
-        bg_gs = self.load_3dgs('bg')
-        # bg_gs = torch.cat((bg_gs[0], bg_gs[1], bg_gs[4]), dim=1)
-        bg_gs = torch.cat(bg_gs, dim=1)
-        fg_gs = self.get_fg_3dgs(ts)
-        return torch.cat((bg_gs, fg_gs), dim=0)
+        means, quats, scales, opacities, colors = self.load_3dgs('bg')
+        bg_cat = []
+        if self.use_xyz:
+            bg_cat.append(means)
+        if self.use_rots:
+            bg_cat.append(quats)
+        if self.use_scale:
+            bg_cat.append(scales)
+        if self.use_opacity:
+            bg_cat.append(opacities)
+        if self.use_color:
+            bg_cat.append(colors)
+        if self.use_motion:
+            pass
+        bg_cat = torch.cat(bg_cat, dim=1)
+        fg_cat = self.get_fg_3dgs(ts)
+        return torch.cat((bg_cat, fg_cat), dim=0)
     
-    def get_fg_3dgs_tfm(self, ts: torch.Tensor) -> torch.Tensor:
-        means, quats, scales, opacities, colors = self.load_3dgs('fg')
+    # def get_fg_3dgs_tfm(self, ts: torch.Tensor) -> torch.Tensor:
+    #     means, quats, scales, opacities, colors = self.load_3dgs('fg')
 
-        if ts is not None:
-            transfms = self.get_transforms(ts)  # (G, B, 3, 4)
-            transfms = transfms[:, 0]  # (G, 3, 4)
-            transfms = transfms.reshape(transfms.size(0), -1)  # (G, 12)
-        else:
-            transfms = self.get_zero_transform(means.size(0))
+    #     if ts is not None:
+    #         transfms = self.get_transforms(ts)  # (G, B, 3, 4)
+    #         transfms = transfms[:, 0]  # (G, 3, 4)
+    #         transfms = transfms.reshape(transfms.size(0), -1)  # (G, 12)
+    #     else:
+    #         transfms = self.get_zero_transform(means.size(0))
 
-        transfms = torch.tensor(transfms, dtype=torch.float32).to(means.device)
+    #     transfms = torch.tensor(transfms, dtype=torch.float32).to(means.device)
 
-        return torch.cat([self.min_max_norm(t) for t in (means, quats, scales, opacities, colors, transfms)], dim=1)
+    #     return torch.cat([self.min_max_norm(t) for t in (means, quats, scales, opacities, colors, transfms)], dim=1)
     
-    def get_all_3dgs_tfm(self, ts: torch.Tensor) -> torch.Tensor:
-        bg_gs = torch.cat(self.load_3dgs_norm('bg'), dim=1)
+    # def get_all_3dgs_tfm(self, ts: torch.Tensor) -> torch.Tensor:
+    #     bg_gs = torch.cat(self.load_3dgs_norm('bg'), dim=1)
 
-        transfms = self.get_zero_transform(bg_gs.size(0))
-        transfms = torch.tensor(transfms, dtype=torch.float32).to(bg_gs.device)
+    #     transfms = self.get_zero_transform(bg_gs.size(0))
+    #     transfms = torch.tensor(transfms, dtype=torch.float32).to(bg_gs.device)
 
-        bg_gs = torch.cat([bg_gs, self.min_max_norm(transfms)], dim=1)
+    #     bg_gs = torch.cat([bg_gs, self.min_max_norm(transfms)], dim=1)
 
-        fg_gs = self.get_fg_3dgs_tfm(ts)
+    #     fg_gs = self.get_fg_3dgs_tfm(ts)
 
-        return torch.cat((bg_gs, fg_gs), dim=0)
+    #     return torch.cat((bg_gs, fg_gs), dim=0)
 
     def get_transforms(self, ts: torch.Tensor| None = None) -> torch.Tensor:
         # coefs = self.fg.get_coefs()  # (G, K)
@@ -138,10 +167,10 @@ class ShapeOfMotion(Dataset):
         coefs = self.ckpt["model"]["fg.params.motion_coefs"]
         return transls, rots, coefs
     
-    def min_max_norm(self, tensor: torch.Tensor) -> torch.Tensor:
-        min_val = tensor.min()
-        max_val = tensor.max()
-        return (tensor - min_val) / (max_val - min_val + 1e-8)  # Avoid division by zero
+    # def min_max_norm(self, tensor: torch.Tensor) -> torch.Tensor:
+    #     min_val = tensor.min()
+    #     max_val = tensor.max()
+    #     return (tensor - min_val) / (max_val - min_val + 1e-8)  # Avoid division by zero
     
     def __getitem__(self, index: int):
         data = {
@@ -181,12 +210,15 @@ def collate_fn_padd(batch):
 
     # # # Compute mask (True for valid values, False for padding)
     # fg_mask = (batch_fg != 0).any(dim=-1)
-    # all_mask = (batch_all != 0).any(dim=-1)
+    all_mask = [torch.ones_like(t['all_gs'], dtype=torch.float32) for t in batch]
+    all_mask = torch.nn.utils.rnn.pad_sequence(all_mask, batch_first=True, padding_value=0.0)
+    all_mask = all_mask.any(dim=-1)
 
     out = {
         "gt_imgs": gt_imgs,
         # "fg_gs": batch_fg,
         "all_gs": batch_all,
+        "all_mask": all_mask,
     }
 
     return out

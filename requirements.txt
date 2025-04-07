@@ -6,3 +6,4 @@ pandas
 matplotlib
 imageio
 roma
+OmegaConf

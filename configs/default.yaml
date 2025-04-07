@@ -1,0 +1,38 @@
+
+dataset:
+  dir: ./data
+  start_idx: 0
+  end_idx: 50
+  resolution:
+  - 128
+  - 128
+  use_xyz: true
+  use_rots: false
+  use_scale: false
+  use_opacity: false
+  use_color: true
+  use_motion: false
+
+output:
+  dir: ./output
+  save_interval: 100
+  
+training:
+  seed: 0
+  batch_size: 12
+  epochs: 100
+  num_workers: 0
+  num_epochs: 100
+  lr: 0.0004
+  warmup: 10000
+  decay_rate: 0.5
+  decay_steps: 100000
+  
+cnn:
+  encode_gs: true
+  hid_dim: 64
+
+attention:
+  use_all_gs: true
+  num_slots: 10
+  num_iters: 3
