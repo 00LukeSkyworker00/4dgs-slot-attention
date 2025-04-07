@@ -173,40 +173,38 @@ class ShapeOfMotion(Dataset):
     #     return (tensor - min_val) / (max_val - min_val + 1e-8)  # Avoid division by zero
     
     def __getitem__(self, index: int):
+
+        bg_means = self.ckpt["model"][f"bg.params.means"]
+        fg_means = self.ckpt["model"][f"fg.params.means"]
+
         data = {
-            # ().
-            # "frame_names": self.frame_names[index],
             # (H, W, 3).
             "gt_imgs": self.get_image(index),
             # (G, 14).
-            # "fg_gs": self.get_fg_3dgs(torch.tensor([index])),
-            # # (G, 14).
-            "all_gs": self.get_all_3dgs(torch.tensor([index]))
+            # "fg_gs": self.get_fg_3dgs(torch.tensor([index])), 
+            # (G, 14).
+            "all_gs": self.get_all_3dgs(torch.tensor([index])),
+            # (G, 3)
+            "all_gs_pos": torch.cat((bg_means, fg_means), dim=0)
         }
         return data
     
 
 def collate_fn_padd(batch):
-    """
-    Pads batch of variable-length sequences and returns:
-    - batch_fg: Padded tensor of shape (batch_size, max_G, 14) for fg_gs
-    - batch_all: Padded tensor of shape (batch_size, max_G, 14) for all_gs
-    - gt_imgs: A list of original images (not padded)
-    - lengths_fg: Tensor containing original sequence lengths for fg_gs
-    - lengths_all: Tensor containing original sequence lengths for all_gs
-    - mask_fg: Boolean mask for valid elements in fg_gs
-    - mask_all: Boolean mask for valid elements in all_gs
-    """
     
-    # Extract fg_gs, all_gs, and gt_imgs
-    # fg_gs = [torch.tensor(t['fg_gs'], dtype=torch.float32) for t in batch]
-    all_gs = [torch.tensor(t['all_gs'], dtype=torch.float32) for t in batch]
     gt_imgs = [torch.tensor(t['gt_imgs'], dtype=torch.float32) for t in batch]  # Keep gt_imgs as is (no padding)
     gt_imgs = torch.stack(gt_imgs)
+    
+
+    # Extract fg_gs, all_gs
+    # fg_gs = [torch.tensor(t['fg_gs'], dtype=torch.float32) for t in batch]
+    all_gs = [torch.tensor(t['all_gs'], dtype=torch.float32) for t in batch]
+    all_gs_pos = [torch.tensor(t['all_gs_pos'], dtype=torch.float32) for t in batch]
 
     # Pad sequences along the first dimension (G)
     # batch_fg = torch.nn.utils.rnn.pad_sequence(fg_gs, batch_first=True, padding_value=0.0)
-    batch_all = torch.nn.utils.rnn.pad_sequence(all_gs, batch_first=True, padding_value=0.0)
+    all_gs = torch.nn.utils.rnn.pad_sequence(all_gs, batch_first=True, padding_value=0.0)
+    all_gs_pos = torch.nn.utils.rnn.pad_sequence(all_gs_pos, batch_first=True, padding_value=0.0)
 
     # # # Compute mask (True for valid values, False for padding)
     # fg_mask = (batch_fg != 0).any(dim=-1)
@@ -217,8 +215,9 @@ def collate_fn_padd(batch):
     out = {
         "gt_imgs": gt_imgs,
         # "fg_gs": batch_fg,
-        "all_gs": batch_all,
+        "all_gs": all_gs,
         "all_mask": all_mask,
+        "all_gs_pos": all_gs_pos,
     }
 
     return out

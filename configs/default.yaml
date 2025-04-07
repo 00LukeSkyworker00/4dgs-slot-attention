@@ -7,15 +7,15 @@ dataset:
   - 128
   - 128
   use_xyz: true
-  use_rots: false
-  use_scale: false
+  use_rots: true
+  use_scale: true
   use_opacity: false
   use_color: true
   use_motion: false
 
 output:
   dir: ./output
-  save_interval: 100
+  save_interval: 10
   
 training:
   seed: 0
@@ -29,6 +29,7 @@ training:
   decay_steps: 100000
   
 cnn:
+  gs_pos_embed: true
   encode_gs: true
   hid_dim: 64
 

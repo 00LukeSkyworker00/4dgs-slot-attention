@@ -70,7 +70,7 @@ def Trainer(rank, world_size, cfg):
         checkpoint = torch.load(checkpoint_path, map_location=f'cuda:{rank}')
         model.module.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint.get('epoch', 0)  # Default to 0 if not saved
+        start_epoch = checkpoint['epoch'] + 1
 
     # Create DataLoader with DistributedSampler
     train_sampler = DistributedSampler(train_set, num_replicas=world_size, rank=rank,
@@ -85,13 +85,12 @@ def Trainer(rank, world_size, cfg):
         writer = SummaryWriter(os.path.join(cfg.output.dir, 'logs'))
         save_env(cfg)
 
-    start = time.time()
     i = start_epoch * len(train_dataloader)  # Resume step count
 
     try:
         for epoch in range(start_epoch, cfg.training.num_epochs):  # Resume from the saved epoch
+            start = time.time()            
             model.train()
-
             total_loss = 0
 
             for sample in tqdm(train_dataloader):
@@ -115,14 +114,20 @@ def Trainer(rank, world_size, cfg):
                 gt_imgs = sample['gt_imgs'].to(device)
 
                 if cfg.attention.use_all_gs:   
-                    gs = sample['all_gs'].to(device)
-                    mask = sample['all_mask'].to(device)
+                    gs = sample['all_gs']
+                    mask = sample['all_mask']
+                    pos_embed = sample['all_gs_pos']
                 else:
-                    gs = sample['fg_gs'].to(device)
-                    mask = sample['fg_mask'].to(device)
+                    gs = sample['fg_gs']
+                    mask = sample['fg_mask']
+                    pos_embed = sample['fg_gs_pos']
+
+                gs = gs.to(device)
+                mask = mask.to(device)
+                pos_embed = pos_embed.to(device)
 
                 # Forward pass through model
-                recon_combined, recons, masks, slots = model(gs, mask)
+                recon_combined, recons, masks, slots = model(gs, pos_embed, mask)
                 
                 # Loss calculation
                 loss = criterion(recon_combined, gt_imgs)
@@ -136,9 +141,6 @@ def Trainer(rank, world_size, cfg):
                 optimizer.step()
 
             total_loss /= len(train_dataloader)
-
-            print ("Epoch: {}, Loss: {}, Time: {}".format(epoch, total_loss,
-                datetime.timedelta(seconds=time.time() - start)))
 
             if rank == 0:   # Print and save only from rank 0
                 print ("Epoch: {}, Loss: {}, Time: {}".format(epoch, total_loss,
@@ -207,7 +209,7 @@ def main():
     # Create output directory
     os.makedirs(cfg.output.dir, exist_ok=True)
     os.makedirs(os.path.join(cfg.output.dir,'checkpoints'), exist_ok=True)
-    print(f"Output directory: {cfg.output.dir}")
+    print(f"Output Directory: {cfg.output.dir}")
 
     # Set random seed for reproducibility
     torch.manual_seed(cfg.training.seed)
