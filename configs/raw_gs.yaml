@@ -20,8 +20,8 @@ output:
 training:
   seed: 0
   batch_size: 12
+  epochs: 1000
   num_workers: 0
-  num_epochs: 1000
   lr: 0.0004
   warmup: 10000
   decay_rate: 0.5
