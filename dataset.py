@@ -41,6 +41,12 @@ class ShapeOfMotion(Dataset):
             self.imgs[index] = self.load_image(index)
         img = cast(torch.Tensor, self.imgs[index])
         return img
+    
+    def get_video(self) -> torch.Tensor:
+        vid = []
+        for i in range(len(self.frame_names)):
+            vid.append(self.get_image(i))
+        return torch.cat(vid, dim=-1)
         
     def get_fg_3dgs(self, ts: torch.Tensor) -> torch.Tensor:
         means, quats, scales, opacities, colors = self.load_3dgs('fg')
@@ -80,7 +86,6 @@ class ShapeOfMotion(Dataset):
             result.append(colors)
         if self.use_motion:
             pass
-
         return torch.cat(result, dim=1)
     
     def get_all_3dgs(self, ts: torch.Tensor) -> torch.Tensor:
@@ -146,6 +151,10 @@ class ShapeOfMotion(Dataset):
     #     return (tensor - min_val) / (max_val - min_val + 1e-8)  # Avoid division by zero
     
     def __getitem__(self, index: int):
+
+        vid = self.get_video()
+        print(vid.shape)
+        exit()
 
         bg_means = self.ckpt["model"][f"bg.params.means"]
         fg_means = self.ckpt["model"][f"fg.params.means"]
