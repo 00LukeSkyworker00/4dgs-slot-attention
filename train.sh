@@ -7,4 +7,4 @@ OUT_DIR=/home/skyworker/result/4DGS_SlotAttention/slot_4dgs
 python train.py \
     --data_dir $DATA_DIR \
     --output_dir $OUT_DIR/$NAME \
-    --cfg ./configs/default.yaml
+    --cfg ./configs/raw_gs.yaml
