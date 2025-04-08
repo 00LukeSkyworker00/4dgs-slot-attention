@@ -88,7 +88,7 @@ def Trainer(rank, world_size, cfg):
     i = start_epoch * len(train_dataloader)  # Resume step count
 
     try:
-        for epoch in range(start_epoch, cfg.training.num_epochs):  # Resume from the saved epoch
+        for epoch in range(start_epoch, cfg.training.num_epochs + 1):  # Resume from the saved epoch
             start = time.time()            
             model.train()
             total_loss = 0

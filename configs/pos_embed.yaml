@@ -29,8 +29,8 @@ training:
   decay_steps: 100000
   
 cnn:
-  gs_pos_embed: false
-  encode_gs: false
+  gs_pos_embed: true
+  encode_gs: true
   hid_dim: 64
 
 attention:

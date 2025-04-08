@@ -298,6 +298,9 @@ class SlotAttentionAutoEncoder(nn.Module):
             else:
                 self.gs_pos_embed = False
 
+        if not self.encode_gs:
+            self.hid_dim = gs_dim
+
         self.encoder_cnn_gs = Gs_Encoder(gs_dim, self.hid_dim)
         self.decoder_cnn = Decoder(self.hid_dim, self.resolution)
 
@@ -309,7 +312,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         self.slot_attention = SlotAttention(
             num_slots=self.num_slots,
             dim=self.hid_dim,
-            iters = self.num_iters,
+            iters=self.num_iters,
             eps = 1e-8, 
             hidden_dim = 128)
         
