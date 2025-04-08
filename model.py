@@ -337,7 +337,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         else:
             # Inject raw 4DGS.
             if self.gs_pos_embed:
-                x = self.encoder_pos(x)
+                x = self.encoder_pos(gs, pos)
             else:
                 x = gs
             # [B, G, D]
