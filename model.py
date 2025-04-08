@@ -98,14 +98,15 @@ class SoftPositionEmbed(nn.Module):
 class Gs_PositionEmbed(nn.Module):    
     def __init__(self, pos_dim, hidden_dim, feature_dim):
         super().__init__()
-        self.encoder = nn.Sequential(
+        self.embedding = nn.Sequential(
             nn.Linear(pos_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, feature_dim),
         )
 
     def forward(self, input, pos):
-        return input + self.encoder(pos)
+        embedding = self.embedding(pos)
+        return input + embedding
 
 class Encoder(nn.Module):
     def __init__(self, resolution, hid_dim):
