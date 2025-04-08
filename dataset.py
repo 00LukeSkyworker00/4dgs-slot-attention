@@ -101,36 +101,9 @@ class ShapeOfMotion(Dataset):
         bg_cat = torch.cat(bg_cat, dim=1)
         fg_cat = self.get_fg_3dgs(ts)
         return torch.cat((bg_cat, fg_cat), dim=0)
-    
-    # def get_fg_3dgs_tfm(self, ts: torch.Tensor) -> torch.Tensor:
-    #     means, quats, scales, opacities, colors = self.load_3dgs('fg')
-
-    #     if ts is not None:
-    #         transfms = self.get_transforms(ts)  # (G, B, 3, 4)
-    #         transfms = transfms[:, 0]  # (G, 3, 4)
-    #         transfms = transfms.reshape(transfms.size(0), -1)  # (G, 12)
-    #     else:
-    #         transfms = self.get_zero_transform(means.size(0))
-
-    #     transfms = torch.tensor(transfms, dtype=torch.float32).to(means.device)
-
-    #     return torch.cat([self.min_max_norm(t) for t in (means, quats, scales, opacities, colors, transfms)], dim=1)
-    
-    # def get_all_3dgs_tfm(self, ts: torch.Tensor) -> torch.Tensor:
-    #     bg_gs = torch.cat(self.load_3dgs_norm('bg'), dim=1)
-
-    #     transfms = self.get_zero_transform(bg_gs.size(0))
-    #     transfms = torch.tensor(transfms, dtype=torch.float32).to(bg_gs.device)
-
-    #     bg_gs = torch.cat([bg_gs, self.min_max_norm(transfms)], dim=1)
-
-    #     fg_gs = self.get_fg_3dgs_tfm(ts)
-
-    #     return torch.cat((bg_gs, fg_gs), dim=0)
 
     def get_transforms(self, ts: torch.Tensor| None = None) -> torch.Tensor:
-        # coefs = self.fg.get_coefs()  # (G, K)
-        transls, rots, coefs = self.load_motion_base()
+        transls, rots, coefs = self.load_motion_base()  # (K, B, 3), (K, B, 6), (G, K)
         transfms = compute_transforms(transls, rots, ts, coefs)  # (G, B, 3, 4)
         return transfms
     
@@ -219,5 +192,4 @@ def collate_fn_padd(batch):
         "all_mask": all_mask,
         "all_gs_pos": all_gs_pos,
     }
-
     return out

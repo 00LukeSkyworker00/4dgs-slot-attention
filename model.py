@@ -95,6 +95,18 @@ class SoftPositionEmbed(nn.Module):
         grid = self.embedding(self.grid.to(inputs.device))
         return inputs + grid
 
+class Gs_PositionEmbed(nn.Module):    
+    def __init__(self, pos_dim, hidden_dim, feature_dim):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(pos_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, feature_dim),
+        )
+
+    def forward(self, input, pos):
+        return input + self.encoder(pos)
+
 class Encoder(nn.Module):
     def __init__(self, resolution, hid_dim):
         super().__init__()
@@ -126,8 +138,9 @@ class Gs_Encoder(nn.Module):
         self.conv2 = nn.Conv1d(hid_dim, hid_dim, 5, padding = 2)
         self.conv3 = nn.Conv1d(hid_dim, hid_dim, 5, padding = 2)
         self.conv4 = nn.Conv1d(hid_dim, hid_dim, 5, padding = 2)
+        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, hid_dim)
 
-    def forward(self, x):
+    def forward(self, x, pos):
         x = x.permute(0,2,1)
         x = self.conv1(x)
         x = F.relu(x)
@@ -138,6 +151,7 @@ class Gs_Encoder(nn.Module):
         x = self.conv4(x)
         x = F.relu(x)
         x = x.permute(0,2,1)
+        x = self.encoder_pos(x, pos)
         # x = torch.flatten(x, 1, 2)
         return x
 
@@ -275,8 +289,8 @@ class SlotAttentionAutoEncoder(nn.Module):
                                         data_cfg.use_opacity,
                                         data_cfg.use_color,
                                         data_cfg.use_motion], dtype=torch.bool)
-        feature_dim = torch.tensor([3, 4, 3, 1, 3, 3], dtype=torch.int32)
-        gs_dim = feature_dim[self.feature_mask].sum().item()
+        feature_len = torch.tensor([3, 4, 3, 1, 3, 3], dtype=torch.int32)
+        gs_dim = feature_len[self.feature_mask].sum().item()
 
         if self.gs_pos_embed:
             if self.feature_mask[0].item() and gs_dim > 3:
@@ -284,26 +298,13 @@ class SlotAttentionAutoEncoder(nn.Module):
             else:
                 self.gs_pos_embed = False
 
-        # if self.gs_pos_embed:
-        #     if self.feature_mask[0].item():
-        #         gs_dim -= 3
-        #     else:
-        #         dim = gs_dim
-            
-        #     if dim != 0:
-        #         gs_dim = dim * 3
-        #     else:
-        #         self.gs_pos_embed = False # Disable position embedding if no features left.
-
-        # if gs_dim <= 0:
-        #     raise ValueError("No features in gs. Please check your configuration.You need at least one feature to be used.")
-
         self.encoder_cnn_gs = Gs_Encoder(gs_dim, self.hid_dim)
         self.decoder_cnn = Decoder(self.hid_dim, self.resolution)
 
         self.fc1 = nn.Linear(self.hid_dim, self.hid_dim)
         self.fc2 = nn.Linear(self.hid_dim, self.hid_dim)
         
+        self.encoder_pos = Gs_PositionEmbed(3, self.hid_dim, gs_dim)
         
         self.slot_attention = SlotAttention(
             num_slots=self.num_slots,
@@ -314,17 +315,17 @@ class SlotAttentionAutoEncoder(nn.Module):
         
         self.slot_broadcast = Gs_Slot_Broadcast(self.num_slots, self.hid_dim, 8)
 
-    def forward(self, gs, pos_embed, mask=None):
+    def forward(self, gs, pos, mask=None):
         # gs: [B, G, D]
         # pos_embed: [B, G, 3, 1]
         # mask: [B, G]
 
-        if self.gs_pos_embed and self.feature_mask[0].item():
+        if self.gs_pos_embed:
             gs = gs[:,:,3:]
 
         if self.encode_gs:
             # Convolutional encoder with position embedding.
-            x = self.encoder_cnn_gs(gs)  # CNN Backbone.
+            x = self.encoder_cnn_gs(gs, pos)  # CNN Backbone.
             x = nn.LayerNorm(x.shape[1:]).to(gs.device)(x)
             x = self.fc1(x)
             x = F.relu(x)
@@ -332,16 +333,12 @@ class SlotAttentionAutoEncoder(nn.Module):
             # [B, G, D]
         else:
             # Inject raw 4DGS.
-            x = gs # [B, G, D]
-        
-        # Gs position embedding.
-        if self.gs_pos_embed:
-            b, g, _ = x.shape
-            pos_embed = pos_embed.unsqueeze(-1)
-            x = x.unsqueeze(-2)
-            x = torch.einsum("bgpi, bgic -> bgpc", pos_embed, x)
-            x = x.reshape(b,g,-1)
-
+            if self.gs_pos_embed:
+                x = self.encoder_pos(x)
+            else:
+                x = gs
+            # [B, G, D]
+            
         # Slot Attention module.
         slots = self.slot_attention(x, mask) # [B, N_S, D]
 

@@ -6,12 +6,12 @@ dataset:
   resolution:
   - 128
   - 128
-  use_xyz: true
-  use_rots: true
-  use_scale: true
-  use_opacity: false
-  use_color: true
-  use_motion: false
+  use_xyz: 1
+  use_rots: 0
+  use_scale: 0
+  use_opacity: 0
+  use_color: 1
+  use_motion: 0
 
 output:
   dir: ./output
