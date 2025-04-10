@@ -71,6 +71,7 @@ def Trainer(rank, world_size, cfg):
         model.module.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
+        print(f"Resume from {start_epoch} epoch!")
 
     # Create DataLoader with DistributedSampler
     train_sampler = DistributedSampler(train_set, num_replicas=world_size, rank=rank,

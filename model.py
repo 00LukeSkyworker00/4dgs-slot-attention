@@ -165,6 +165,14 @@ class Decoder(nn.Module):
         self.conv4 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
         self.conv5 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(1, 1), padding=2)
         self.conv6 = nn.ConvTranspose2d(hid_dim, 4, 3, stride=(1, 1), padding=1)
+        
+        # nn.init.kaiming_normal_(self.conv1.weight)
+        # nn.init.kaiming_normal_(self.conv2.weight)
+        # nn.init.kaiming_normal_(self.conv3.weight)
+        # nn.init.kaiming_normal_(self.conv4.weight)
+        # nn.init.kaiming_normal_(self.conv5.weight)
+        # nn.init.xavier_normal_(self.conv6.weight)
+        
         self.decoder_initial_size = (8, 8)
         self.decoder_pos = SoftPositionEmbed(hid_dim, self.decoder_initial_size)
         self.resolution = resolution
@@ -191,16 +199,18 @@ class Decoder(nn.Module):
 class Gs_Decoder(nn.Module):
     def __init__(self, hid_dim, resolution):
         super().__init__()
-
-        self.fc1 = nn.Linear(hid_dim, hid_dim)
-        self.fc2 = nn.Linear(hid_dim, hid_dim)
-
         self.conv1 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
         self.conv2 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
         self.conv3 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
         self.conv4 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
         self.conv5 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(1, 1), padding=2)
         self.conv6 = nn.ConvTranspose2d(hid_dim, 4, 3, stride=(1, 1), padding=1)
+        nn.init.kaiming_normal_(self.conv1.weight)
+        nn.init.kaiming_normal_(self.conv2.weight)
+        nn.init.kaiming_normal_(self.conv3.weight)
+        nn.init.kaiming_normal_(self.conv4.weight)
+        nn.init.kaiming_normal_(self.conv5.weight)
+        nn.init.xavier_normal_(self.conv6.weight)
         self.decoder_initial_size = (8, 8)
         self.decoder_pos = SoftPositionEmbed(hid_dim, self.decoder_initial_size)
         self.resolution = resolution
