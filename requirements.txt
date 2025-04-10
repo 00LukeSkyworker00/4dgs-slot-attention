@@ -7,3 +7,4 @@ matplotlib
 imageio
 roma
 OmegaConf
+git+https://github.com/nerfstudio-project/gsplat.git
