@@ -30,11 +30,11 @@ class ShapeOfMotion(Dataset):
                              data_cfg.use_opacity,
                              data_cfg.use_color,
                              data_cfg.use_motion]
-        self.quat_activation = lambda x: F.normalize(x, dim=-1, p=2)
-        self.color_activation = torch.sigmoid
-        self.scale_activation = torch.exp
-        self.opacity_activation = torch.sigmoid
-        self.motion_coef_activation = lambda x: F.softmax(x, dim=-1)
+        # self.quat_activation = lambda x: F.normalize(x, dim=-1, p=2)
+        # self.color_activation = torch.sigmoid
+        # self.scale_activation = torch.exp
+        # self.opacity_activation = torch.sigmoid
+        # self.motion_coef_activation = lambda x: F.softmax(x, dim=-1)
 
     @property
     def num_frames(self) -> int:
@@ -112,6 +112,7 @@ class ShapeOfMotion(Dataset):
         opacities = self.opacity_activation(opacities)[:, None]
         colors = self.color_activation(colors)
         colors = torch.nan_to_num(colors, nan=1e-6)
+        -# activation must be placed in renderer not dataset!!!!!
 
         return means, quats, scales, opacities, colors
     

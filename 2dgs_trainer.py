@@ -11,9 +11,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import tqdm
-import tyro
+# import tyro
 import viser
-from datasets.colmap import Dataset, Parser
+# from datasets.colmap import Dataset, Parser
 from datasets.traj import generate_interpolated_path
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
@@ -178,57 +178,66 @@ class Config:
         self.refine_every = int(self.refine_every * factor)
 
 
-def create_splats_with_optimizers(
-    parser: Parser,
-    init_type: str = "sfm",
-    init_num_pts: int = 100_000,
-    init_extent: float = 3.0,
-    init_opacity: float = 0.1,
-    init_scale: float = 1.0,
+def import_splats_with_optimizers(
+    # parser: Parser,
+    # init_type: str = "sfm",
+    # init_num_pts: int = 100_000,
+    # init_extent: float = 3.0,
+    # init_opacity: float = 0.1,
+    # init_scale: float = 1.0,
+    # sh_degree: int = 3,
+    means: torch.Tensor,
+    quats: torch.Tensor,
+    scales: torch.Tensor,
+    opacities: torch.Tensor,
+    colors: torch.Tensor,
     scene_scale: float = 1.0,
-    sh_degree: int = 3,
     sparse_grad: bool = False,
     batch_size: int = 1,
     feature_dim: Optional[int] = None,
     device: str = "cuda",
 ) -> Tuple[torch.nn.ParameterDict, Dict[str, torch.optim.Optimizer]]:
-    if init_type == "sfm":
-        points = torch.from_numpy(parser.points).float()
-        rgbs = torch.from_numpy(parser.points_rgb / 255.0).float()
-    elif init_type == "random":
-        points = init_extent * scene_scale * (torch.rand((init_num_pts, 3)) * 2 - 1)
-        rgbs = torch.rand((init_num_pts, 3))
-    else:
-        raise ValueError("Please specify a correct init_type: sfm or random")
+    # if init_type == "sfm":
+    #     points = torch.from_numpy(parser.points).float()
+    #     rgbs = torch.from_numpy(parser.points_rgb / 255.0).float()
+    # elif init_type == "random":
+    #     points = init_extent * scene_scale * (torch.rand((init_num_pts, 3)) * 2 - 1)
+    #     rgbs = torch.rand((init_num_pts, 3))
+    # else:
+    #     raise ValueError("Please specify a correct init_type: sfm or random")
 
-    N = points.shape[0]
+    N = means.shape[0]
     # Initialize the GS size to be the average dist of the 3 nearest neighbors
-    dist2_avg = (knn(points, 4)[:, 1:] ** 2).mean(dim=-1)  # [N,]
-    dist_avg = torch.sqrt(dist2_avg)
-    scales = torch.log(dist_avg * init_scale).unsqueeze(-1).repeat(1, 3)  # [N, 3]
-    quats = torch.rand((N, 4))  # [N, 4]
-    opacities = torch.logit(torch.full((N,), init_opacity))  # [N,]
+    # dist2_avg = (knn(points, 4)[:, 1:] ** 2).mean(dim=-1)  # [N,]
+    # dist_avg = torch.sqrt(dist2_avg)
+    # scales = torch.log(dist_avg * init_scale).unsqueeze(-1).repeat(1, 3)  # [N, 3]
+    # quats = torch.rand((N, 4))  # [N, 4]
+    # opacities = torch.logit(torch.full((N,), init_opacity))  # [N,]
 
     params = [
         # name, value, lr
-        ("means", torch.nn.Parameter(points), 1.6e-4 * scene_scale),
+        ("means", torch.nn.Parameter(means), 1.6e-4 * scene_scale),
         ("scales", torch.nn.Parameter(scales), 5e-3),
         ("quats", torch.nn.Parameter(quats), 1e-3),
         ("opacities", torch.nn.Parameter(opacities), 5e-2),
     ]
 
-    if feature_dim is None:
-        # color is SH coefficients.
-        colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
-        colors[:, 0, :] = rgb_to_sh(rgbs)
-        params.append(("sh0", torch.nn.Parameter(colors[:, :1, :]), 2.5e-3))
-        params.append(("shN", torch.nn.Parameter(colors[:, 1:, :]), 2.5e-3 / 20))
-    else:
-        # features will be used for appearance and view-dependent shading
-        features = torch.rand(N, feature_dim)  # [N, feature_dim]
-        params.append(("features", torch.nn.Parameter(features), 2.5e-3))
-        colors = torch.logit(rgbs)  # [N, 3]
-        params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))
+    # if feature_dim is None:
+    #     # color is SH coefficients.
+    #     colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
+    #     colors[:, 0, :] = rgb_to_sh(rgbs)
+    #     params.append(("sh0", torch.nn.Parameter(colors[:, :1, :]), 2.5e-3))
+    #     params.append(("shN", torch.nn.Parameter(colors[:, 1:, :]), 2.5e-3 / 20))
+    # else:
+    #     # features will be used for appearance and view-dependent shading
+    #     features = torch.rand(N, feature_dim)  # [N, feature_dim]
+    #     params.append(("features", torch.nn.Parameter(features), 2.5e-3))
+    #     colors = torch.logit(rgbs)  # [N, 3]
+    #     params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))
+    
+    features = torch.rand(N, feature_dim)  # [N, feature_dim]
+    params.append(("features", torch.nn.Parameter(features), 2.5e-3))
+    params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))
 
     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
     # Scale learning rate based on batch size, reference:
@@ -249,61 +258,66 @@ def create_splats_with_optimizers(
 class Runner:
     """Engine for training and testing."""
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, means, quats, scales, opacities, colors, scene_scale=1.0, strategy: DefaultStrategy | None=None) -> None:
         set_random_seed(42)
 
-        self.cfg = cfg
+        # self.cfg = cfg
         self.device = "cuda"
 
-        # Where to dump results.
-        os.makedirs(cfg.result_dir, exist_ok=True)
+        # # Where to dump results.
+        # os.makedirs(cfg.result_dir, exist_ok=True)
 
-        # Setup output directories.
-        self.ckpt_dir = f"{cfg.result_dir}/ckpts"
-        os.makedirs(self.ckpt_dir, exist_ok=True)
-        self.stats_dir = f"{cfg.result_dir}/stats"
-        os.makedirs(self.stats_dir, exist_ok=True)
-        self.render_dir = f"{cfg.result_dir}/renders"
-        os.makedirs(self.render_dir, exist_ok=True)
+        # # Setup output directories.
+        # self.ckpt_dir = f"{cfg.result_dir}/ckpts"
+        # os.makedirs(self.ckpt_dir, exist_ok=True)
+        # self.stats_dir = f"{cfg.result_dir}/stats"
+        # os.makedirs(self.stats_dir, exist_ok=True)
+        # self.render_dir = f"{cfg.result_dir}/renders"
+        # os.makedirs(self.render_dir, exist_ok=True)
 
         # Tensorboard
-        self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
+        # self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
 
         # Load data: Training data should contain initial points and colors.
-        self.parser = Parser(
-            data_dir=cfg.data_dir,
-            factor=cfg.data_factor,
-            normalize=True,
-            test_every=cfg.test_every,
-        )
-        self.trainset = Dataset(
-            self.parser,
-            split="train",
-            patch_size=cfg.patch_size,
-            load_depths=cfg.depth_loss,
-        )
-        self.valset = Dataset(self.parser, split="val")
-        self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
-        print("Scene scale:", self.scene_scale)
+        # self.parser = Parser(
+        #     data_dir=cfg.data_dir,
+        #     factor=cfg.data_factor,
+        #     normalize=True,
+        #     test_every=cfg.test_every,
+        # )
+        # self.trainset = Dataset(
+        #     self.parser,
+        #     split="train",
+        #     patch_size=cfg.patch_size,
+        #     load_depths=cfg.depth_loss,
+        # )
+        # self.valset = Dataset(self.parser, split="val")
+        # self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
+        # print("Scene scale:", self.scene_scale)
 
         # Model
-        feature_dim = 32 if cfg.app_opt else None
-        self.splats, self.optimizers = create_splats_with_optimizers(
-            self.parser,
-            init_type=cfg.init_type,
-            init_num_pts=cfg.init_num_pts,
-            init_extent=cfg.init_extent,
-            init_opacity=cfg.init_opa,
-            init_scale=cfg.init_scale,
-            scene_scale=self.scene_scale,
-            sh_degree=cfg.sh_degree,
-            sparse_grad=cfg.sparse_grad,
-            batch_size=cfg.batch_size,
-            feature_dim=feature_dim,
+        # feature_dim = 32 if cfg.app_opt else None
+        self.splats, self.optimizers = import_splats_with_optimizers(
+            # self.parser,
+            # init_type=cfg.init_type,
+            # init_num_pts=cfg.init_num_pts,
+            # init_extent=cfg.init_extent,
+            # init_opacity=cfg.init_opa,
+            # init_scale=cfg.init_scale,
+            means=means,
+            quats=quats,
+            scales=scales,
+            opacities=opacities,
+            colors=colors,
+            scene_scale=scene_scale,
+            # sh_degree=cfg.sh_degree,
+            # sparse_grad=cfg.sparse_grad,
+            # batch_size=cfg.batch_size,
+            # feature_dim=feature_dim,
             device=self.device,
         )
         print("Model initialized. Number of GS:", len(self.splats["means"]))
-        self.model_type = cfg.model_type
+        self.model_type = "2dgs"
 
         if self.model_type == "2dgs":
             key_for_gradient = "gradient_2dgs"
@@ -311,59 +325,60 @@ class Runner:
             key_for_gradient = "means2d"
 
         # Densification Strategy
-        self.strategy = DefaultStrategy(
-            verbose=True,
-            prune_opa=cfg.prune_opa,
-            grow_grad2d=cfg.grow_grad2d,
-            grow_scale3d=cfg.grow_scale3d,
-            prune_scale3d=cfg.prune_scale3d,
-            # refine_scale2d_stop_iter=4000, # splatfacto behavior
-            refine_start_iter=cfg.refine_start_iter,
-            refine_stop_iter=cfg.refine_stop_iter,
-            reset_every=cfg.reset_every,
-            refine_every=cfg.refine_every,
-            absgrad=cfg.absgrad,
-            revised_opacity=cfg.revised_opacity,
-            key_for_gradient=key_for_gradient,
-        )
+        # self.strategy = DefaultStrategy(
+        #     verbose=True,
+        #     prune_opa=cfg.prune_opa,
+        #     grow_grad2d=cfg.grow_grad2d,
+        #     grow_scale3d=cfg.grow_scale3d,
+        #     prune_scale3d=cfg.prune_scale3d,
+        #     # refine_scale2d_stop_iter=4000, # splatfacto behavior
+        #     refine_start_iter=cfg.refine_start_iter,
+        #     refine_stop_iter=cfg.refine_stop_iter,
+        #     reset_every=cfg.reset_every,
+        #     refine_every=cfg.refine_every,
+        #     absgrad=cfg.absgrad,
+        #     revised_opacity=cfg.revised_opacity,
+        #     key_for_gradient=key_for_gradient,
+        # )
+        self.strategy = strategy
         self.strategy.check_sanity(self.splats, self.optimizers)
         self.strategy_state = self.strategy.initialize_state()
 
         self.pose_optimizers = []
-        if cfg.pose_opt:
-            self.pose_adjust = CameraOptModule(len(self.trainset)).to(self.device)
-            self.pose_adjust.zero_init()
-            self.pose_optimizers = [
-                torch.optim.Adam(
-                    self.pose_adjust.parameters(),
-                    lr=cfg.pose_opt_lr * math.sqrt(cfg.batch_size),
-                    weight_decay=cfg.pose_opt_reg,
-                )
-            ]
+        # if cfg.pose_opt:
+        #     self.pose_adjust = CameraOptModule(len(self.trainset)).to(self.device)
+        #     self.pose_adjust.zero_init()
+        #     self.pose_optimizers = [
+        #         torch.optim.Adam(
+        #             self.pose_adjust.parameters(),
+        #             lr=cfg.pose_opt_lr * math.sqrt(cfg.batch_size),
+        #             weight_decay=cfg.pose_opt_reg,
+        #         )
+        #     ]
 
-        if cfg.pose_noise > 0.0:
-            self.pose_perturb = CameraOptModule(len(self.trainset)).to(self.device)
-            self.pose_perturb.random_init(cfg.pose_noise)
+        # if cfg.pose_noise > 0.0:
+        #     self.pose_perturb = CameraOptModule(len(self.trainset)).to(self.device)
+        #     self.pose_perturb.random_init(cfg.pose_noise)
 
         self.app_optimizers = []
-        if cfg.app_opt:
-            self.app_module = AppearanceOptModule(
-                len(self.trainset), feature_dim, cfg.app_embed_dim, cfg.sh_degree
-            ).to(self.device)
-            # initialize the last layer to be zero so that the initial output is zero.
-            torch.nn.init.zeros_(self.app_module.color_head[-1].weight)
-            torch.nn.init.zeros_(self.app_module.color_head[-1].bias)
-            self.app_optimizers = [
-                torch.optim.Adam(
-                    self.app_module.embeds.parameters(),
-                    lr=cfg.app_opt_lr * math.sqrt(cfg.batch_size) * 10.0,
-                    weight_decay=cfg.app_opt_reg,
-                ),
-                torch.optim.Adam(
-                    self.app_module.color_head.parameters(),
-                    lr=cfg.app_opt_lr * math.sqrt(cfg.batch_size),
-                ),
-            ]
+        # if cfg.app_opt:
+        #     self.app_module = AppearanceOptModule(
+        #         len(self.trainset), feature_dim, cfg.app_embed_dim, cfg.sh_degree
+        #     ).to(self.device)
+        #     # initialize the last layer to be zero so that the initial output is zero.
+        #     torch.nn.init.zeros_(self.app_module.color_head[-1].weight)
+        #     torch.nn.init.zeros_(self.app_module.color_head[-1].bias)
+        #     self.app_optimizers = [
+        #         torch.optim.Adam(
+        #             self.app_module.embeds.parameters(),
+        #             lr=cfg.app_opt_lr * math.sqrt(cfg.batch_size) * 10.0,
+        #             weight_decay=cfg.app_opt_reg,
+        #         ),
+        #         torch.optim.Adam(
+        #             self.app_module.color_head.parameters(),
+        #             lr=cfg.app_opt_lr * math.sqrt(cfg.batch_size),
+        #         ),
+        #     ]
 
         # Losses & Metrics.
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
@@ -373,13 +388,13 @@ class Runner:
         )
 
         # Viewer
-        if not self.cfg.disable_viewer:
-            self.server = viser.ViserServer(port=cfg.port, verbose=False)
-            self.viewer = nerfview.Viewer(
-                server=self.server,
-                render_fn=self._viewer_render_fn,
-                mode="training",
-            )
+        # if not self.cfg.disable_viewer:
+        #     self.server = viser.ViserServer(port=cfg.port, verbose=False)
+        #     self.viewer = nerfview.Viewer(
+        #         server=self.server,
+        #         render_fn=self._viewer_render_fn,
+        #         mode="training",
+        #     )
 
     def rasterize_splats(
         self,
@@ -729,16 +744,16 @@ class Runner:
                 self.eval(step)
                 self.render_traj(step)
 
-            if not cfg.disable_viewer:
-                self.viewer.lock.release()
-                num_train_steps_per_sec = 1.0 / (time.time() - tic)
-                num_train_rays_per_sec = (
-                    num_train_rays_per_step * num_train_steps_per_sec
-                )
-                # Update the viewer state.
-                self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
-                # Update the scene.
-                self.viewer.update(step, num_train_rays_per_step)
+            # if not cfg.disable_viewer:
+            #     self.viewer.lock.release()
+            #     num_train_steps_per_sec = 1.0 / (time.time() - tic)
+            #     num_train_rays_per_sec = (
+            #         num_train_rays_per_step * num_train_steps_per_sec
+            #     )
+            #     # Update the viewer state.
+            #     self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
+            #     # Update the scene.
+            #     self.viewer.update(step, num_train_rays_per_step)
 
     @torch.no_grad()
     def eval(self, step: int):
@@ -950,25 +965,25 @@ class Runner:
         return render_colors[0].cpu().numpy()
 
 
-def main(cfg: Config):
-    runner = Runner(cfg)
+# def main(cfg: Config):
+#     runner = Runner(cfg)
 
-    if cfg.ckpt is not None:
-        # run eval only
-        ckpt = torch.load(cfg.ckpt, map_location=runner.device)
-        for k in runner.splats.keys():
-            runner.splats[k].data = ckpt["splats"][k]
-        runner.eval(step=ckpt["step"])
-        runner.render_traj(step=ckpt["step"])
-    else:
-        runner.train()
+#     if cfg.ckpt is not None:
+#         # run eval only
+#         ckpt = torch.load(cfg.ckpt, map_location=runner.device)
+#         for k in runner.splats.keys():
+#             runner.splats[k].data = ckpt["splats"][k]
+#         runner.eval(step=ckpt["step"])
+#         runner.render_traj(step=ckpt["step"])
+#     else:
+#         runner.train()
 
-    if not cfg.disable_viewer:
-        print("Viewer running... Ctrl+C to exit.")
-        time.sleep(1000000)
+#     if not cfg.disable_viewer:
+#         print("Viewer running... Ctrl+C to exit.")
+#         time.sleep(1000000)
 
 
-if __name__ == "__main__":
-    cfg = tyro.cli(Config)
-    cfg.adjust_steps(cfg.steps_scaler)
-    main(cfg)
+# if __name__ == "__main__":
+#     cfg = tyro.cli(Config)
+#     cfg.adjust_steps(cfg.steps_scaler)
+#     main(cfg)
