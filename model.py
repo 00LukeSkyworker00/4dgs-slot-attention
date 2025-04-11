@@ -197,41 +197,28 @@ class Decoder(nn.Module):
         return x
     
 class Gs_Decoder(nn.Module):
-    def __init__(self, hid_dim, resolution):
+    def __init__(self, slot_dim, resolution=None):
         super().__init__()
-        self.conv1 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
-        self.conv2 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
-        self.conv3 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
-        self.conv4 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
-        self.conv5 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(1, 1), padding=2)
-        self.conv6 = nn.ConvTranspose2d(hid_dim, 4, 3, stride=(1, 1), padding=1)
-        nn.init.kaiming_normal_(self.conv1.weight)
-        nn.init.kaiming_normal_(self.conv2.weight)
-        nn.init.kaiming_normal_(self.conv3.weight)
-        nn.init.kaiming_normal_(self.conv4.weight)
-        nn.init.kaiming_normal_(self.conv5.weight)
-        nn.init.xavier_normal_(self.conv6.weight)
-        self.decoder_initial_size = (8, 8)
-        self.decoder_pos = SoftPositionEmbed(hid_dim, self.decoder_initial_size)
-        self.resolution = resolution
+        self.scale = slot_dim ** -0.5  # for scaled dot-product
+        self.softmax = nn.Softmax(dim=-1)  # over G
 
-    def forward(self, x):
-        x = self.decoder_pos(x)
-        x = x.permute(0,3,1,2)
-        x = self.conv1(x)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.relu(x)
-        x = self.conv3(x)
-        x = F.relu(x)
-        x = self.conv4(x)
-        x = F.relu(x)
-        x = self.conv5(x)
-        x = F.relu(x)
-        x = self.conv6(x)
-        x = x[:,:,:self.resolution[0], :self.resolution[1]]
-        x = x.permute(0,2,3,1)
-        return x
+    def forward(self, slots, gs):
+        """
+        slots: [B, N_S, D]
+        gs:    [B, G, D]
+        return: mask [B, N_S, G, 1]
+        """
+        # Compute attention logits between slots and ground truth gaussians
+        # [B, N_S, D] @ [B, D, G] = [B, N_S, G]
+        attn_logits = torch.einsum('bid,bjd->bij', slots, gs) * self.scale
+
+        # Softmax over Slots → each Gs softly selects Slots
+        mask = attn_logits.softmax(dim=-2)  # [B, N_S, G]
+
+        # Add a dummy last dimension for consistency
+        mask = mask.unsqueeze(-1)  # [B, N_S, G, 1]
+
+        return mask
     
 class Gs_Slot_Broadcast(nn.Module):
     def __init__(self, num_slots, slot_size, grid_size=8):
@@ -313,7 +300,7 @@ class SlotAttentionAutoEncoder(nn.Module):
             self.hid_dim = gs_dim
 
         self.encoder_cnn_gs = Gs_Encoder(gs_dim, self.hid_dim)
-        self.decoder_cnn = Decoder(self.hid_dim, self.resolution)
+        self.decoder_cnn = Gs_Decoder(self.hid_dim, self.resolution)
 
         self.fc1 = nn.Linear(self.hid_dim, self.hid_dim)
         self.fc2 = nn.Linear(self.hid_dim, self.hid_dim)
@@ -356,21 +343,16 @@ class SlotAttentionAutoEncoder(nn.Module):
         # Slot Attention module.
         slots = self.slot_attention(x, mask) # [B, N_S, D]
 
-        """Broadcast slot features to a 2D grid and collapse slot dimension."""
+        # Slot broadcaster.
         slots = self.slot_broadcast(slots) # [B*N_S, W_init, H_init, D].
 
-        # slots = slots.reshape((-1, slots.shape[-1])).unsqueeze(1).unsqueeze(2)
-        # slots = slots.repeat((1, 8, 8, 1)) # [B*N_S, W_init, H_init, D].
-
-
+        # Slot decoder.
         x = self.decoder_cnn(slots) # [B*N_S, W, H, CHANNEL+1]
-
-        # Undo combination of slot and batch dimension; split alpha masks.
-        recons, masks = x.reshape(gs.shape[0], -1, x.shape[1], x.shape[2], x.shape[3]).split([3,1], dim=-1)
-        # recons: [B, N_S, W, H, CHANNEL]   masks: [B, N_S, W, H, 1]
-
-        # Normalize alpha masks over slots.
-        masks = nn.Softmax(dim=1)(masks)
-        recon_combined = torch.sum(recons * masks, dim=1)  # [B, W, H, CHANNEL].        
+        # # Undo combination of slot and batch dimension; split alpha masks.
+        # recons, masks = x.reshape(gs.shape[0], -1, x.shape[1], x.shape[2], x.shape[3]).split([3,1], dim=-1)
+        # # recons: [B, N_S, W, H, CHANNEL]   masks: [B, N_S, W, H, 1]
+        # # Normalize alpha masks over slots.
+        # masks = nn.Softmax(dim=1)(masks)
+        # recon_combined = torch.sum(recons * masks, dim=1)  # [B, W, H, CHANNEL]. 
 
         return recon_combined, recons, masks, slots
