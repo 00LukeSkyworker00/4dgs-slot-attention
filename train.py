@@ -122,20 +122,21 @@ def Trainer(rank, world_size, cfg):
                     gs = sample['fg_gs']
                     mask = sample['fg_mask']
                     pos_embed = sample['fg_gs_pos']
+                
+                Ks = sample['Ks']
+                w2cs = sample['w2cs']
 
                 gs = gs.to(device)
                 mask = mask.to(device)
                 pos_embed = pos_embed.to(device)
 
                 # Forward pass through model
-                recon_combined, recons, masks, slots = model(gs, pos_embed, mask)
+                recon_combined = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
                 
                 # Loss calculation
                 loss = criterion(recon_combined, gt_imgs)
                 # print(loss.item())
                 total_loss += loss.item()
-
-                del recons, masks, slots
 
                 optimizer.zero_grad()
                 loss.backward()

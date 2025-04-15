@@ -34,5 +34,5 @@ cnn:
 
 attention:
   use_all_gs: true
-  num_slots: 10
-  num_iters: 3
+  num_slots: 20
+  num_iters: 6

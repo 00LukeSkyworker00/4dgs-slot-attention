@@ -14,6 +14,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 
+
+
 class ShapeOfMotion(Dataset):
     def __init__(self, data_dir, data_cfg, transform=None):        
         self.data_dir = data_dir
@@ -30,11 +32,11 @@ class ShapeOfMotion(Dataset):
                              data_cfg.use_opacity,
                              data_cfg.use_color,
                              data_cfg.use_motion]
-        # self.quat_activation = lambda x: F.normalize(x, dim=-1, p=2)
-        # self.color_activation = torch.sigmoid
-        # self.scale_activation = torch.exp
-        # self.opacity_activation = torch.sigmoid
-        # self.motion_coef_activation = lambda x: F.softmax(x, dim=-1)
+        self.quat_activation = lambda x: F.normalize(x, dim=-1, p=2)
+        self.color_activation = torch.sigmoid
+        self.scale_activation = torch.exp
+        self.opacity_activation = torch.sigmoid
+        self.motion_coef_activation = lambda x: F.softmax(x, dim=-1)
 
     @property
     def num_frames(self) -> int:
@@ -112,7 +114,6 @@ class ShapeOfMotion(Dataset):
         opacities = self.opacity_activation(opacities)[:, None]
         colors = self.color_activation(colors)
         colors = torch.nan_to_num(colors, nan=1e-6)
-        -# activation must be placed in renderer not dataset!!!!!
 
         return means, quats, scales, opacities, colors
     
@@ -152,8 +153,12 @@ class ShapeOfMotion(Dataset):
 
 def collate_fn_padd(batch):
     
-    gt_imgs = [torch.tensor(t['gt_imgs'], dtype=torch.float32) for t in batch]  # Keep gt_imgs as is (no padding)
-    gt_imgs = torch.stack(gt_imgs)    
+    gt_imgs = [torch.tensor(t['gt_imgs'], dtype=torch.float32) for t in batch]
+    gt_imgs = torch.stack(gt_imgs)
+    Ks = [torch.tensor(t['Ks'], dtype=torch.float32) for t in batch]
+    Ks = torch.stack(Ks)
+    w2cs = [torch.tensor(t['w2cs'], dtype=torch.float32) for t in batch]
+    w2cs = torch.stack(w2cs)
 
     # Extract all_gs
     all_gs = []
@@ -182,5 +187,7 @@ def collate_fn_padd(batch):
         "all_gs": all_gs,
         "all_mask": all_mask,
         "all_gs_pos": all_gs_pos,
+        "Ks": Ks,
+        "w2cs": w2cs,
     }
     return out

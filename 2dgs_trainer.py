@@ -1,33 +1,34 @@
 import json
 import math
-import os
+# import os
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple
 
 import imageio
-import nerfview
+# import nerfview
 import numpy as np
 import torch
 import torch.nn.functional as F
 import tqdm
 # import tyro
-import viser
+# import viser
 # from datasets.colmap import Dataset, Parser
-from datasets.traj import generate_interpolated_path
+# from datasets.traj import generate_interpolated_path
 from torch import Tensor
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-from utils import (
-    AppearanceOptModule,
-    CameraOptModule,
-    apply_depth_colormap,
-    colormap,
-    knn,
-    rgb_to_sh,
-    set_random_seed,
-)
+# from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+# from utils import (
+#     AppearanceOptModule,
+#     CameraOptModule,
+#     apply_depth_colormap,
+#     colormap,
+#     knn,
+#     rgb_to_sh,
+#     set_random_seed,
+# )
 
 from gsplat.rendering import rasterization_2dgs, rasterization_2dgs_inria_wrapper
 from gsplat.strategy import DefaultStrategy
@@ -258,8 +259,8 @@ def import_splats_with_optimizers(
 class Runner:
     """Engine for training and testing."""
 
-    def __init__(self, means, quats, scales, opacities, colors, scene_scale=1.0, strategy: DefaultStrategy | None=None) -> None:
-        set_random_seed(42)
+    def __init__(self, means, quats, scales, opacities, colors, gt_img, scene_scale=1.0, strategy: DefaultStrategy | None=None) -> None:
+        self.set_random_seed(42)
 
         # self.cfg = cfg
         self.device = "cuda"
@@ -285,6 +286,7 @@ class Runner:
         #     normalize=True,
         #     test_every=cfg.test_every,
         # )
+        self.gt_img = gt_img
         # self.trainset = Dataset(
         #     self.parser,
         #     split="train",
@@ -382,10 +384,10 @@ class Runner:
 
         # Losses & Metrics.
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
-        self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
-        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True).to(
-            self.device
-        )
+        # self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
+        # self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True).to(
+        #     self.device
+        # )
 
         # Viewer
         # if not self.cfg.disable_viewer:
@@ -395,6 +397,11 @@ class Runner:
         #         render_fn=self._viewer_render_fn,
         #         mode="training",
         #     )
+
+    def set_random_seed(seed: int):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
     def rasterize_splats(
         self,
@@ -536,9 +543,9 @@ class Runner:
             camtoworlds = camtoworlds_gt = data["camtoworld"].to(device)  # [1, 4, 4]
             Ks = data["K"].to(device)  # [1, 3, 3]
             pixels = data["image"].to(device) / 255.0  # [1, H, W, 3]
-            num_train_rays_per_step = (
-                pixels.shape[0] * pixels.shape[1] * pixels.shape[2]
-            )
+            # num_train_rays_per_step = (
+            #     pixels.shape[0] * pixels.shape[1] * pixels.shape[2]
+            # )
             image_ids = data["image_id"].to(device)
             if cfg.depth_loss:
                 points = data["points"].to(device)  # [1, M, 2]
@@ -659,29 +666,29 @@ class Runner:
                 desc += f"pose err={pose_err.item():.6f}| "
             pbar.set_description(desc)
 
-            if cfg.tb_every > 0 and step % cfg.tb_every == 0:
-                mem = torch.cuda.max_memory_allocated() / 1024**3
-                self.writer.add_scalar("train/loss", loss.item(), step)
-                self.writer.add_scalar("train/l1loss", l1loss.item(), step)
-                self.writer.add_scalar("train/ssimloss", ssimloss.item(), step)
-                self.writer.add_scalar("train/num_GS", len(self.splats["means"]), step)
-                self.writer.add_scalar("train/mem", mem, step)
-                if cfg.depth_loss:
-                    self.writer.add_scalar("train/depthloss", depthloss.item(), step)
-                if cfg.normal_loss:
-                    self.writer.add_scalar("train/normalloss", normalloss.item(), step)
-                if cfg.dist_loss:
-                    self.writer.add_scalar("train/distloss", distloss.item(), step)
-                if cfg.tb_save_image:
-                    canvas = (
-                        torch.cat([pixels, colors[..., :3]], dim=2)
-                        .detach()
-                        .cpu()
-                        .numpy()
-                    )
-                    canvas = canvas.reshape(-1, *canvas.shape[2:])
-                    self.writer.add_image("train/render", canvas, step)
-                self.writer.flush()
+            # if cfg.tb_every > 0 and step % cfg.tb_every == 0:
+            #     mem = torch.cuda.max_memory_allocated() / 1024**3
+            #     self.writer.add_scalar("train/loss", loss.item(), step)
+            #     self.writer.add_scalar("train/l1loss", l1loss.item(), step)
+            #     self.writer.add_scalar("train/ssimloss", ssimloss.item(), step)
+            #     self.writer.add_scalar("train/num_GS", len(self.splats["means"]), step)
+            #     self.writer.add_scalar("train/mem", mem, step)
+            #     if cfg.depth_loss:
+            #         self.writer.add_scalar("train/depthloss", depthloss.item(), step)
+            #     if cfg.normal_loss:
+            #         self.writer.add_scalar("train/normalloss", normalloss.item(), step)
+            #     if cfg.dist_loss:
+            #         self.writer.add_scalar("train/distloss", distloss.item(), step)
+            #     if cfg.tb_save_image:
+            #         canvas = (
+            #             torch.cat([pixels, colors[..., :3]], dim=2)
+            #             .detach()
+            #             .cpu()
+            #             .numpy()
+            #         )
+            #         canvas = canvas.reshape(-1, *canvas.shape[2:])
+            #         self.writer.add_image("train/render", canvas, step)
+            #     self.writer.flush()
 
             self.strategy.step_post_backward(
                 params=self.splats,
@@ -720,29 +727,29 @@ class Runner:
             for scheduler in schedulers:
                 scheduler.step()
 
-            # save checkpoint
-            if step in [i - 1 for i in cfg.save_steps] or step == max_steps - 1:
-                mem = torch.cuda.max_memory_allocated() / 1024**3
-                stats = {
-                    "mem": mem,
-                    "ellipse_time": time.time() - global_tic,
-                    "num_GS": len(self.splats["means"]),
-                }
-                print("Step: ", step, stats)
-                with open(f"{self.stats_dir}/train_step{step:04d}.json", "w") as f:
-                    json.dump(stats, f)
-                torch.save(
-                    {
-                        "step": step,
-                        "splats": self.splats.state_dict(),
-                    },
-                    f"{self.ckpt_dir}/ckpt_{step}.pt",
-                )
+            # # save checkpoint
+            # if step in [i - 1 for i in cfg.save_steps] or step == max_steps - 1:
+            #     mem = torch.cuda.max_memory_allocated() / 1024**3
+            #     stats = {
+            #         "mem": mem,
+            #         "ellipse_time": time.time() - global_tic,
+            #         "num_GS": len(self.splats["means"]),
+            #     }
+            #     print("Step: ", step, stats)
+            #     with open(f"{self.stats_dir}/train_step{step:04d}.json", "w") as f:
+            #         json.dump(stats, f)
+            #     torch.save(
+            #         {
+            #             "step": step,
+            #             "splats": self.splats.state_dict(),
+            #         },
+            #         f"{self.ckpt_dir}/ckpt_{step}.pt",
+            #     )
 
-            # eval the full set
-            if step in [i - 1 for i in cfg.eval_steps] or step == max_steps - 1:
-                self.eval(step)
-                self.render_traj(step)
+            # # eval the full set
+            # if step in [i - 1 for i in cfg.eval_steps] or step == max_steps - 1:
+            #     self.eval(step)
+            #     self.render_traj(step)
 
             # if not cfg.disable_viewer:
             #     self.viewer.lock.release()
@@ -755,214 +762,214 @@ class Runner:
             #     # Update the scene.
             #     self.viewer.update(step, num_train_rays_per_step)
 
-    @torch.no_grad()
-    def eval(self, step: int):
-        """Entry for evaluation."""
-        print("Running evaluation...")
-        cfg = self.cfg
-        device = self.device
+    # @torch.no_grad()
+    # def eval(self, step: int):
+    #     """Entry for evaluation."""
+    #     print("Running evaluation...")
+    #     cfg = self.cfg
+    #     device = self.device
 
-        valloader = torch.utils.data.DataLoader(
-            self.valset, batch_size=1, shuffle=False, num_workers=1
-        )
-        ellipse_time = 0
-        metrics = {"psnr": [], "ssim": [], "lpips": []}
-        for i, data in enumerate(valloader):
-            camtoworlds = data["camtoworld"].to(device)
-            Ks = data["K"].to(device)
-            pixels = data["image"].to(device) / 255.0
-            height, width = pixels.shape[1:3]
+    #     valloader = torch.utils.data.DataLoader(
+    #         self.valset, batch_size=1, shuffle=False, num_workers=1
+    #     )
+    #     ellipse_time = 0
+    #     metrics = {"psnr": [], "ssim": [], "lpips": []}
+    #     for i, data in enumerate(valloader):
+    #         camtoworlds = data["camtoworld"].to(device)
+    #         Ks = data["K"].to(device)
+    #         pixels = data["image"].to(device) / 255.0
+    #         height, width = pixels.shape[1:3]
 
-            torch.cuda.synchronize()
-            tic = time.time()
-            (
-                colors,
-                alphas,
-                normals,
-                normals_from_depth,
-                render_distort,
-                render_median,
-                _,
-            ) = self.rasterize_splats(
-                camtoworlds=camtoworlds,
-                Ks=Ks,
-                width=width,
-                height=height,
-                sh_degree=cfg.sh_degree,
-                near_plane=cfg.near_plane,
-                far_plane=cfg.far_plane,
-                render_mode="RGB+ED",
-            )  # [1, H, W, 3]
-            colors = torch.clamp(colors, 0.0, 1.0)
-            colors = colors[..., :3]  # Take RGB channels
-            torch.cuda.synchronize()
-            ellipse_time += time.time() - tic
+    #         torch.cuda.synchronize()
+    #         tic = time.time()
+    #         (
+    #             colors,
+    #             alphas,
+    #             normals,
+    #             normals_from_depth,
+    #             render_distort,
+    #             render_median,
+    #             _,
+    #         ) = self.rasterize_splats(
+    #             camtoworlds=camtoworlds,
+    #             Ks=Ks,
+    #             width=width,
+    #             height=height,
+    #             sh_degree=cfg.sh_degree,
+    #             near_plane=cfg.near_plane,
+    #             far_plane=cfg.far_plane,
+    #             render_mode="RGB+ED",
+    #         )  # [1, H, W, 3]
+    #         colors = torch.clamp(colors, 0.0, 1.0)
+    #         colors = colors[..., :3]  # Take RGB channels
+    #         torch.cuda.synchronize()
+    #         ellipse_time += time.time() - tic
 
-            # write images
-            canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}.png", (canvas * 255).astype(np.uint8)
-            )
+    #         # write images
+    #         canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
+    #         imageio.imwrite(
+    #             f"{self.render_dir}/val_{i:04d}.png", (canvas * 255).astype(np.uint8)
+    #         )
 
-            # write median depths
-            render_median = (render_median - render_median.min()) / (
-                render_median.max() - render_median.min()
-            )
-            # render_median = render_median.detach().cpu().squeeze(0).unsqueeze(-1).repeat(1, 1, 3).numpy()
-            render_median = (
-                render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
-            )
+    #         # write median depths
+    #         render_median = (render_median - render_median.min()) / (
+    #             render_median.max() - render_median.min()
+    #         )
+    #         # render_median = render_median.detach().cpu().squeeze(0).unsqueeze(-1).repeat(1, 1, 3).numpy()
+    #         render_median = (
+    #             render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
+    #         )
 
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_median_depth_{step}.png",
-                (render_median * 255).astype(np.uint8),
-            )
+    #         imageio.imwrite(
+    #             f"{self.render_dir}/val_{i:04d}_median_depth_{step}.png",
+    #             (render_median * 255).astype(np.uint8),
+    #         )
 
-            # write normals
-            normals = (normals * 0.5 + 0.5).squeeze(0).cpu().numpy()
-            normals_output = (normals * 255).astype(np.uint8)
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_normal_{step}.png", normals_output
-            )
+    #         # write normals
+    #         normals = (normals * 0.5 + 0.5).squeeze(0).cpu().numpy()
+    #         normals_output = (normals * 255).astype(np.uint8)
+    #         imageio.imwrite(
+    #             f"{self.render_dir}/val_{i:04d}_normal_{step}.png", normals_output
+    #         )
 
-            # write normals from depth
-            normals_from_depth *= alphas.squeeze(0).detach()
-            normals_from_depth = (normals_from_depth * 0.5 + 0.5).cpu().numpy()
-            normals_from_depth = (normals_from_depth - np.min(normals_from_depth)) / (
-                np.max(normals_from_depth) - np.min(normals_from_depth)
-            )
-            normals_from_depth_output = (normals_from_depth * 255).astype(np.uint8)
-            if len(normals_from_depth_output.shape) == 4:
-                normals_from_depth_output = normals_from_depth_output.squeeze(0)
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_normals_from_depth_{step}.png",
-                normals_from_depth_output,
-            )
+    #         # write normals from depth
+    #         normals_from_depth *= alphas.squeeze(0).detach()
+    #         normals_from_depth = (normals_from_depth * 0.5 + 0.5).cpu().numpy()
+    #         normals_from_depth = (normals_from_depth - np.min(normals_from_depth)) / (
+    #             np.max(normals_from_depth) - np.min(normals_from_depth)
+    #         )
+    #         normals_from_depth_output = (normals_from_depth * 255).astype(np.uint8)
+    #         if len(normals_from_depth_output.shape) == 4:
+    #             normals_from_depth_output = normals_from_depth_output.squeeze(0)
+    #         imageio.imwrite(
+    #             f"{self.render_dir}/val_{i:04d}_normals_from_depth_{step}.png",
+    #             normals_from_depth_output,
+    #         )
 
-            # write distortions
+    #         # write distortions
 
-            render_dist = render_distort
-            dist_max = torch.max(render_dist)
-            dist_min = torch.min(render_dist)
-            render_dist = (render_dist - dist_min) / (dist_max - dist_min)
-            render_dist = (
-                colormap(render_dist.cpu().numpy()[0])
-                .permute((1, 2, 0))
-                .numpy()
-                .astype(np.uint8)
-            )
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}_distortions_{step}.png", render_dist
-            )
+    #         # render_dist = render_distort
+    #         # dist_max = torch.max(render_dist)
+    #         # dist_min = torch.min(render_dist)
+    #         # render_dist = (render_dist - dist_min) / (dist_max - dist_min)
+    #         # render_dist = (
+    #         #     colormap(render_dist.cpu().numpy()[0])
+    #         #     .permute((1, 2, 0))
+    #         #     .numpy()
+    #         #     .astype(np.uint8)
+    #         # )
+    #         # imageio.imwrite(
+    #         #     f"{self.render_dir}/val_{i:04d}_distortions_{step}.png", render_dist
+    #         # )
 
-            pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
-            colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
-            metrics["psnr"].append(self.psnr(colors, pixels))
-            metrics["ssim"].append(self.ssim(colors, pixels))
-            metrics["lpips"].append(self.lpips(colors, pixels))
+    #         pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
+    #         colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
+    #         metrics["psnr"].append(self.psnr(colors, pixels))
+    #         metrics["ssim"].append(self.ssim(colors, pixels))
+    #         metrics["lpips"].append(self.lpips(colors, pixels))
 
-        ellipse_time /= len(valloader)
+    #     ellipse_time /= len(valloader)
 
-        psnr = torch.stack(metrics["psnr"]).mean()
-        ssim = torch.stack(metrics["ssim"]).mean()
-        lpips = torch.stack(metrics["lpips"]).mean()
-        print(
-            f"PSNR: {psnr.item():.3f}, SSIM: {ssim.item():.4f}, LPIPS: {lpips.item():.3f} "
-            f"Time: {ellipse_time:.3f}s/image "
-            f"Number of GS: {len(self.splats['means'])}"
-        )
-        # save stats as json
-        stats = {
-            "psnr": psnr.item(),
-            "ssim": ssim.item(),
-            "lpips": lpips.item(),
-            "ellipse_time": ellipse_time,
-            "num_GS": len(self.splats["means"]),
-        }
-        with open(f"{self.stats_dir}/val_step{step:04d}.json", "w") as f:
-            json.dump(stats, f)
-        # save stats to tensorboard
-        for k, v in stats.items():
-            self.writer.add_scalar(f"val/{k}", v, step)
-        self.writer.flush()
+    #     psnr = torch.stack(metrics["psnr"]).mean()
+    #     ssim = torch.stack(metrics["ssim"]).mean()
+    #     lpips = torch.stack(metrics["lpips"]).mean()
+    #     print(
+    #         f"PSNR: {psnr.item():.3f}, SSIM: {ssim.item():.4f}, LPIPS: {lpips.item():.3f} "
+    #         f"Time: {ellipse_time:.3f}s/image "
+    #         f"Number of GS: {len(self.splats['means'])}"
+    #     )
+    #     # save stats as json
+    #     stats = {
+    #         "psnr": psnr.item(),
+    #         "ssim": ssim.item(),
+    #         "lpips": lpips.item(),
+    #         "ellipse_time": ellipse_time,
+    #         "num_GS": len(self.splats["means"]),
+    #     }
+    #     with open(f"{self.stats_dir}/val_step{step:04d}.json", "w") as f:
+    #         json.dump(stats, f)
+    #     # save stats to tensorboard
+    #     for k, v in stats.items():
+    #         self.writer.add_scalar(f"val/{k}", v, step)
+    #     self.writer.flush()
 
-    @torch.no_grad()
-    def render_traj(self, step: int):
-        """Entry for trajectory rendering."""
-        print("Running trajectory rendering...")
-        cfg = self.cfg
-        device = self.device
+    # @torch.no_grad()
+    # def render_traj(self, step: int):
+    #     """Entry for trajectory rendering."""
+    #     print("Running trajectory rendering...")
+    #     cfg = self.cfg
+    #     device = self.device
 
-        camtoworlds = self.parser.camtoworlds[5:-5]
-        camtoworlds = generate_interpolated_path(camtoworlds, 1)  # [N, 3, 4]
-        camtoworlds = np.concatenate(
-            [
-                camtoworlds,
-                np.repeat(np.array([[[0.0, 0.0, 0.0, 1.0]]]), len(camtoworlds), axis=0),
-            ],
-            axis=1,
-        )  # [N, 4, 4]
+    #     camtoworlds = self.parser.camtoworlds[5:-5]
+    #     camtoworlds = generate_interpolated_path(camtoworlds, 1)  # [N, 3, 4]
+    #     camtoworlds = np.concatenate(
+    #         [
+    #             camtoworlds,
+    #             np.repeat(np.array([[[0.0, 0.0, 0.0, 1.0]]]), len(camtoworlds), axis=0),
+    #         ],
+    #         axis=1,
+    #     )  # [N, 4, 4]
 
-        camtoworlds = torch.from_numpy(camtoworlds).float().to(device)
-        K = torch.from_numpy(list(self.parser.Ks_dict.values())[0]).float().to(device)
-        width, height = list(self.parser.imsize_dict.values())[0]
+    #     camtoworlds = torch.from_numpy(camtoworlds).float().to(device)
+    #     K = torch.from_numpy(list(self.parser.Ks_dict.values())[0]).float().to(device)
+    #     width, height = list(self.parser.imsize_dict.values())[0]
 
-        canvas_all = []
-        for i in tqdm.trange(len(camtoworlds), desc="Rendering trajectory"):
-            renders, _, _, surf_normals, _, _, _ = self.rasterize_splats(
-                camtoworlds=camtoworlds[i : i + 1],
-                Ks=K[None],
-                width=width,
-                height=height,
-                sh_degree=cfg.sh_degree,
-                near_plane=cfg.near_plane,
-                far_plane=cfg.far_plane,
-                render_mode="RGB+ED",
-            )  # [1, H, W, 4]
-            colors = torch.clamp(renders[0, ..., 0:3], 0.0, 1.0)  # [H, W, 3]
-            depths = renders[0, ..., 3:4]  # [H, W, 1]
-            depths = (depths - depths.min()) / (depths.max() - depths.min())
+    #     canvas_all = []
+    #     for i in tqdm.trange(len(camtoworlds), desc="Rendering trajectory"):
+    #         renders, _, _, surf_normals, _, _, _ = self.rasterize_splats(
+    #             camtoworlds=camtoworlds[i : i + 1],
+    #             Ks=K[None],
+    #             width=width,
+    #             height=height,
+    #             sh_degree=cfg.sh_degree,
+    #             near_plane=cfg.near_plane,
+    #             far_plane=cfg.far_plane,
+    #             render_mode="RGB+ED",
+    #         )  # [1, H, W, 4]
+    #         colors = torch.clamp(renders[0, ..., 0:3], 0.0, 1.0)  # [H, W, 3]
+    #         depths = renders[0, ..., 3:4]  # [H, W, 1]
+    #         depths = (depths - depths.min()) / (depths.max() - depths.min())
 
-            surf_normals = (surf_normals - surf_normals.min()) / (
-                surf_normals.max() - surf_normals.min()
-            )
+    #         surf_normals = (surf_normals - surf_normals.min()) / (
+    #             surf_normals.max() - surf_normals.min()
+    #         )
 
-            # write images
-            canvas = torch.cat(
-                [colors, depths.repeat(1, 1, 3)], dim=1 if width > height else 1
-            )
-            canvas = (canvas.cpu().numpy() * 255).astype(np.uint8)
-            canvas_all.append(canvas)
+    #         # write images
+    #         canvas = torch.cat(
+    #             [colors, depths.repeat(1, 1, 3)], dim=1 if width > height else 1
+    #         )
+    #         canvas = (canvas.cpu().numpy() * 255).astype(np.uint8)
+    #         canvas_all.append(canvas)
 
-        # save to video
-        video_dir = f"{cfg.result_dir}/videos"
-        os.makedirs(video_dir, exist_ok=True)
-        writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=30)
-        for canvas in canvas_all:
-            writer.append_data(canvas)
-        writer.close()
-        print(f"Video saved to {video_dir}/traj_{step}.mp4")
+    #     # save to video
+    #     video_dir = f"{cfg.result_dir}/videos"
+    #     os.makedirs(video_dir, exist_ok=True)
+    #     writer = imageio.get_writer(f"{video_dir}/traj_{step}.mp4", fps=30)
+    #     for canvas in canvas_all:
+    #         writer.append_data(canvas)
+    #     writer.close()
+    #     print(f"Video saved to {video_dir}/traj_{step}.mp4")
 
-    @torch.no_grad()
-    def _viewer_render_fn(
-        self, camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
-    ):
-        """Callable function for the viewer."""
-        W, H = img_wh
-        c2w = camera_state.c2w
-        K = camera_state.get_K(img_wh)
-        c2w = torch.from_numpy(c2w).float().to(self.device)
-        K = torch.from_numpy(K).float().to(self.device)
+    # @torch.no_grad()
+    # def _viewer_render_fn(
+    #     self, camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+    # ):
+    #     """Callable function for the viewer."""
+    #     W, H = img_wh
+    #     c2w = camera_state.c2w
+    #     K = camera_state.get_K(img_wh)
+    #     c2w = torch.from_numpy(c2w).float().to(self.device)
+    #     K = torch.from_numpy(K).float().to(self.device)
 
-        render_colors, _, _, _, _, _, _ = self.rasterize_splats(
-            camtoworlds=c2w[None],
-            Ks=K[None],
-            width=W,
-            height=H,
-            sh_degree=self.cfg.sh_degree,  # active all SH degrees
-            radius_clip=3.0,  # skip GSs that have small image radius (in pixels)
-        )  # [1, H, W, 3]
-        return render_colors[0].cpu().numpy()
+    #     render_colors, _, _, _, _, _, _ = self.rasterize_splats(
+    #         camtoworlds=c2w[None],
+    #         Ks=K[None],
+    #         width=W,
+    #         height=H,
+    #         sh_degree=self.cfg.sh_degree,  # active all SH degrees
+    #         radius_clip=3.0,  # skip GSs that have small image radius (in pixels)
+    #     )  # [1, H, W, 3]
+    #     return render_colors[0].cpu().numpy()
 
 
 # def main(cfg: Config):

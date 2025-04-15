@@ -7,8 +7,9 @@ from gsplat import rasterization_2dgs
 from scipy.spatial.transform import Rotation as R
 
 class Renderer():
-    def __init__(self, resolution: tuple[int,int]):
+    def __init__(self, resolution: tuple[int,int], requires_grad=False):
         self.resolution = resolution
+        self.requires_grad = requires_grad
         pass
 
     def rasterize_gs(self, means, quats, scales, opacities, colors, Ks, w2cs, w=None, h=None) -> torch.Tensor:
@@ -46,7 +47,10 @@ class Renderer():
 
         # render_colors, alphas, info = rasterization(means,quats,scales,opacities,colors,w2c,Ks,W,H)
 
-        img = (render_colors[0]* 255.0).to(torch.uint8)
+        if self.requires_grad:
+            img = render_colors[0]*255.0
+        else:
+            img = (render_colors[0]* 255.0).to(torch.uint8)
 
         return img
         

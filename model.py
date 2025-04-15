@@ -2,6 +2,7 @@ import numpy as np
 from torch import nn
 import torch
 import torch.nn.functional as F
+from renderer import *
 
 # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -197,32 +198,46 @@ class Decoder(nn.Module):
         return x
     
 class Gs_Decoder(nn.Module):
-    def __init__(self, slot_dim, resolution=None):
-        super().__init__()
-        self.scale = slot_dim ** -0.5  # for scaled dot-product
-        self.softmax = nn.Softmax(dim=-1)  # over G
+    def __init__(self, slot_dim):
+        super(Gs_Decoder, self).__init__()
+        # Output: [x, y, z, scale(3), rot(3), opacity, color(3), ...]
+        base = 4
+        self.num_gs = base ** 4
+        self.mlp = nn.Sequential(
+            nn.Linear(slot_dim, slot_dim * base),
+            nn.ReLU(),
+            nn.Linear(slot_dim * base, slot_dim * base ** 2),
+            nn.ReLU(),
+            nn.Linear(slot_dim * base ** 2, slot_dim * base ** 3),
+            nn.ReLU(),
+            nn.Linear(slot_dim * base ** 3, self.num_gs * slot_dim)
+        )
 
-    def forward(self, slots, gs):
+    def forward(self, slots: torch.Tensor):
         """
-        slots: [B, N_S, D]
-        gs:    [B, G, D]
-        return: mask [B, N_S, G, 1]
+        slots: (B, N_S, D)
+        returns: (B, N_S, N_G, D)
         """
-        # Compute attention logits between slots and ground truth gaussians
-        # [B, N_S, D] @ [B, D, G] = [B, N_S, G]
-        attn_logits = torch.einsum('bid,bjd->bij', slots, gs) * self.scale
+        B, N_S, D = slots.shape
+        gs = self.mlp(slots)
+        gs = gs.reshape(B, N_S*self.num_gs, D)
+        return gs # (B, N_S*N_G, D)
 
-        # Softmax over Slots → each Gs softly selects Slots
-        mask = attn_logits.softmax(dim=-2)  # [B, N_S, G]
-
-        # Add a dummy last dimension for consistency
-        mask = mask.unsqueeze(-1)  # [B, N_S, G, 1]
-
-        return mask
-    
 class Gs_Slot_Broadcast(nn.Module):
-    def __init__(self, num_slots, slot_size, grid_size=8):
+    def __init__(self, slot_dim, hid_dim):
         super(Gs_Slot_Broadcast, self).__init__()
+        
+
+    def forward(self, slots: torch.Tensor):
+        """
+        slots: (B, N_S, D)
+        returns: (B, N_S, N_G, D)
+        """
+        
+
+class GS_2D_Slot_Broadcast(nn.Module):
+    def __init__(self, num_slots, slot_size, grid_size=8):
+        super(GS_2D_Slot_Broadcast, self).__init__()
         self.num_slots = num_slots
         self.slot_size = slot_size
         self.grid_size = grid_size
@@ -300,7 +315,7 @@ class SlotAttentionAutoEncoder(nn.Module):
             self.hid_dim = gs_dim
 
         self.encoder_cnn_gs = Gs_Encoder(gs_dim, self.hid_dim)
-        self.decoder_cnn = Gs_Decoder(self.hid_dim, self.resolution)
+        self.decoder_gs = Gs_Decoder(gs_dim)
 
         self.fc1 = nn.Linear(self.hid_dim, self.hid_dim)
         self.fc2 = nn.Linear(self.hid_dim, self.hid_dim)
@@ -314,9 +329,11 @@ class SlotAttentionAutoEncoder(nn.Module):
             eps = 1e-8, 
             hidden_dim = 128)
         
-        self.slot_broadcast = Gs_Slot_Broadcast(self.num_slots, self.hid_dim, 8)
+        self.slot_broadcast = Gs_Slot_Broadcast(gs_dim, self.hid_dim)
 
-    def forward(self, gs, pos, mask=None):
+        self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
+
+    def forward(self, gs, pos, Ks, w2cs, mask=None):
         # gs: [B, G, D]
         # pos_embed: [B, G, 3, 1]
         # mask: [B, G]
@@ -343,16 +360,29 @@ class SlotAttentionAutoEncoder(nn.Module):
         # Slot Attention module.
         slots = self.slot_attention(x, mask) # [B, N_S, D]
 
-        # Slot broadcaster.
-        slots = self.slot_broadcast(slots) # [B*N_S, W_init, H_init, D].
+        # Slot broadcaster MLP.
+        # slots = self.slot_broadcast(slots) # (B, N_S * G, D)
+        
+        # Slot gs decoder
+        gs = self.decoder_gs(slots)
 
         # Slot decoder.
-        x = self.decoder_cnn(slots) # [B*N_S, W, H, CHANNEL+1]
+        # x = self.decoder_cnn(slots) # [B*N_S, W, H, CHANNEL+1]
+
+        # Slot renderer.
+        recon_combined = []
+        for batch,ks,w2c in zip(gs,Ks,w2cs):
+            means, quats, scales, opacities, colors = torch.split(batch, [3,4,3,1,3], dim=-1)
+            recon_combined.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
+        recon_combined = torch.stack(recon_combined,dim=0)
+        # print(recon_combined.shape)
+        
+
         # # Undo combination of slot and batch dimension; split alpha masks.
         # recons, masks = x.reshape(gs.shape[0], -1, x.shape[1], x.shape[2], x.shape[3]).split([3,1], dim=-1)
         # # recons: [B, N_S, W, H, CHANNEL]   masks: [B, N_S, W, H, 1]
         # # Normalize alpha masks over slots.
         # masks = nn.Softmax(dim=1)(masks)
-        # recon_combined = torch.sum(recons * masks, dim=1)  # [B, W, H, CHANNEL]. 
+        # recon_combined = torch.sum(recons * masks, dim=1)  # [B, W, H, CHANNEL].
 
-        return recon_combined, recons, masks, slots
+        return recon_combined

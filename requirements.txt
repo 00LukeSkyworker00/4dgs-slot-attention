@@ -7,4 +7,5 @@ matplotlib
 imageio
 roma
 OmegaConf
+torchmetrics
 git+https://github.com/nerfstudio-project/gsplat.git
