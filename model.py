@@ -137,13 +137,15 @@ class Gs_Encoder(nn.Module):
     def __init__(self, gs_dim, hid_dim):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(gs_dim, 32),
+            nn.Linear(gs_dim, gs_dim*2),
             nn.ReLU(),
-            nn.Linear(32, 64),
+            nn.Linear(gs_dim*2, gs_dim*3),
             nn.ReLU(),
-            nn.Linear(64, 128),
+            nn.Linear(gs_dim*3, gs_dim*4),
+            nn.ReLU(),
+            nn.Linear(gs_dim*4, gs_dim*5),
         )
-        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, 128)
+        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, gs_dim*5)
 
     def forward(self, x, pos):
         x = self.mlp(x)
@@ -191,17 +193,15 @@ class Decoder(nn.Module):
         return x
     
 class Gs_Decoder(nn.Module):
-    def __init__(self, gs_dim, hid_dim):
+    def __init__(self, gs_dim, out_dim, hid_dim):
         super(Gs_Decoder, self).__init__()
         # Output: [x, y, z, scale(3), rot(3), opacity, color(3), ...]
         self.mlp = nn.Sequential(
-            nn.Linear(128, 64),
+            nn.Linear(gs_dim, 64),
             nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, gs_dim),
+            nn.Linear(64, out_dim),
         )
-        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, 128)
+        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, gs_dim)
 
 
     def forward(self, slots, pos) -> torch.Tensor:
@@ -285,19 +285,16 @@ class SlotAttentionAutoEncoder(nn.Module):
                                         data_cfg.use_color,
                                         data_cfg.use_motion], dtype=torch.bool)
         feature_len = torch.tensor([3, 4, 3, 1, 3, 3], dtype=torch.int32)
-        gs_dim = 11
+        gs_dim = 14
 
         self.encoder_gs = Gs_Encoder(gs_dim, self.hid_dim)
-        self.decoder_gs = Gs_Decoder(gs_dim, self.hid_dim)
-
-        self.fc1 = nn.Linear(self.hid_dim, self.hid_dim)
-        self.fc2 = nn.Linear(self.hid_dim, self.hid_dim)
+        self.decoder_gs = Gs_Decoder(gs_dim, 1, self.hid_dim)
         
         self.encoder_pos = Gs_PositionEmbed(3, self.hid_dim, gs_dim)
         
         self.slot_attention = SlotAttention(
             num_slots=self.num_slots,
-            dim=128,
+            dim=gs_dim,
             iters=self.num_iters,
             eps = 1e-8, 
             hidden_dim = 256)
@@ -312,35 +309,50 @@ class SlotAttentionAutoEncoder(nn.Module):
         # mask: [B, G]
         B,G,D = gs.shape
 
-        features = gs[:,:,3:]
-        copy = gs[:,:,:11]
+        # x = self.encoder_gs(gs, pos)
+        x = gs
 
-        x = self.encoder_gs(features, pos)
-            
         # Slot Attention module.
         slots = self.slot_attention(x, mask) # [B, N_S, D]
 
         # Broadcast slots to all pos
-        slots = slots.unsqueeze(-2).repeat(1,1,G,1) # [B, N_S, G, D]
+        slots = slots.unsqueeze(-2) # [B, N_S, D]
+        slots = slots.repeat(1,1,G,1) # [B, N_S, G, D]
 
         # Slot gs decoder
-        slots = self.decoder_gs(slots, pos.unsqueeze(1)) # [B, N_S, G, D]
-        gs = slots.sum(1)[:,:,8:11] / self.num_slots
+        colors = slots[:,:,:,11:14]
+        color_mask = self.decoder_gs(slots, pos.unsqueeze(1)) # [B, N_S, G, 1]
+
+        color_mask = nn.Softmax(dim=1)(color_mask)
+
+        gs_slot = gs[:,:,:11].unsqueeze(1).repeat(1,self.num_slots,1,1)
+        gs_slot = torch.cat([gs_slot,colors * color_mask], dim=-1)
+        colors = torch.sum(colors * color_mask, dim=1)
+        gs = torch.cat([gs[:,:,:11],colors], dim=-1)
+
         
-        gs = torch.cat([copy,gs], dim=-1)
-        copy = copy.unsqueeze(1).repeat(1,self.num_slots,1,1)
-        slots = torch.cat([copy,slots[:,:,:,8:11]], dim=-1)
+        # gs = torch.cat([copy,opacities,colors], dim=-1)
+        # copy = copy.unsqueeze(1).repeat(1,self.num_slots,1,1)
+        # slots = torch.cat([copy,opacities,colors], dim=-1)
 
         # Slot decoder.
         # x = self.decoder_cnn(slots) # [B*N_S, W, H, CHANNEL+1]
 
         # Slot renderer.
         recon_combined = []
+        recon_slots = []
+
         for batch,ks,w2c in zip(gs,Ks,w2cs):
             means, quats, scales, opacities, colors = torch.split(batch, [3,4,3,1,3], dim=-1)
             recon_combined.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
         recon_combined = torch.stack(recon_combined,dim=0)
-        # print(recon_combined.shape)
+
+        # for batch,ks,w2c in zip(gs_slot,Ks,w2cs):
+        #     for slot in batch:
+        #         means, quats, scales, opacities, colors = torch.split(slot, [3,4,3,1,3], dim=-1)
+        #         recon_slots.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
+        # recon_slots = torch.stack(recon_slots,dim=0)
+
         
 
         # # Undo combination of slot and batch dimension; split alpha masks.
@@ -350,4 +362,4 @@ class SlotAttentionAutoEncoder(nn.Module):
         # masks = nn.Softmax(dim=1)(masks)
         # recon_combined = torch.sum(recons * masks, dim=1)  # [B, W, H, CHANNEL].
 
-        return recon_combined
+        return recon_combined, recon_slots

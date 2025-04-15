@@ -48,7 +48,7 @@ class Renderer():
         # render_colors, alphas, info = rasterization(means,quats,scales,opacities,colors,w2c,Ks,W,H)
 
         if self.requires_grad:
-            img = render_colors[0]*255.0
+            img = render_colors[0]
         else:
             img = (render_colors[0]* 255.0).to(torch.uint8)
 

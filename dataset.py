@@ -24,7 +24,7 @@ class ShapeOfMotion(Dataset):
         self.img_ext = os.path.splitext(os.listdir(self.img_dir)[0])[1]
         self.frame_names = [os.path.splitext(p)[0] for p in sorted(os.listdir(self.img_dir))]
         self.imgs: list[torch.Tensor | None] = [None for _ in self.frame_names]
-        self.renderer = Renderer(tuple(data_cfg.resolution))
+        self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
         self.transform = transform
         self.feature_mask = [data_cfg.use_xyz,
                              data_cfg.use_rots,
