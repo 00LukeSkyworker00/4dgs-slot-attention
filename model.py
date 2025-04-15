@@ -136,25 +136,18 @@ class Encoder(nn.Module):
 class Gs_Encoder(nn.Module):
     def __init__(self, gs_dim, hid_dim):
         super().__init__()
-        self.conv1 = nn.Conv1d(gs_dim, hid_dim, 5, padding = 2)
-        self.conv2 = nn.Conv1d(hid_dim, hid_dim, 5, padding = 2)
-        self.conv3 = nn.Conv1d(hid_dim, hid_dim, 5, padding = 2)
-        self.conv4 = nn.Conv1d(hid_dim, hid_dim, 5, padding = 2)
-        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, hid_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(gs_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 64),
+            nn.ReLU(),
+            nn.Linear(64, 128),
+        )
+        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, 128)
 
     def forward(self, x, pos):
-        x = x.permute(0,2,1)
-        x = self.conv1(x)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.relu(x)
-        x = self.conv3(x)
-        x = F.relu(x)
-        x = self.conv4(x)
-        x = F.relu(x)
-        x = x.permute(0,2,1)
+        x = self.mlp(x)
         x = self.encoder_pos(x, pos)
-        # x = torch.flatten(x, 1, 2)
         return x
 
 class Decoder(nn.Module):
@@ -198,42 +191,31 @@ class Decoder(nn.Module):
         return x
     
 class Gs_Decoder(nn.Module):
-    def __init__(self, slot_dim):
+    def __init__(self, gs_dim, hid_dim):
         super(Gs_Decoder, self).__init__()
         # Output: [x, y, z, scale(3), rot(3), opacity, color(3), ...]
-        base = 4
-        self.num_gs = base ** 4
         self.mlp = nn.Sequential(
-            nn.Linear(slot_dim, slot_dim * base),
+            nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(slot_dim * base, slot_dim * base ** 2),
+            nn.Linear(64, 32),
             nn.ReLU(),
-            nn.Linear(slot_dim * base ** 2, slot_dim * base ** 3),
-            nn.ReLU(),
-            nn.Linear(slot_dim * base ** 3, self.num_gs * slot_dim)
+            nn.Linear(32, gs_dim),
         )
+        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, 128)
 
-    def forward(self, slots: torch.Tensor):
-        """
-        slots: (B, N_S, D)
-        returns: (B, N_S, N_G, D)
-        """
-        B, N_S, D = slots.shape
+
+    def forward(self, slots, pos) -> torch.Tensor:
+        slots = self.encoder_pos(slots, pos)
         gs = self.mlp(slots)
-        gs = gs.reshape(B, N_S*self.num_gs, D)
         return gs # (B, N_S*N_G, D)
 
 class Gs_Slot_Broadcast(nn.Module):
     def __init__(self, slot_dim, hid_dim):
         super(Gs_Slot_Broadcast, self).__init__()
-        
+        pass
 
-    def forward(self, slots: torch.Tensor):
-        """
-        slots: (B, N_S, D)
-        returns: (B, N_S, N_G, D)
-        """
-        
+    def forward(self, slots, pos):
+        pass
 
 class GS_2D_Slot_Broadcast(nn.Module):
     def __init__(self, num_slots, slot_size, grid_size=8):
@@ -303,19 +285,10 @@ class SlotAttentionAutoEncoder(nn.Module):
                                         data_cfg.use_color,
                                         data_cfg.use_motion], dtype=torch.bool)
         feature_len = torch.tensor([3, 4, 3, 1, 3, 3], dtype=torch.int32)
-        gs_dim = feature_len[self.feature_mask].sum().item()
+        gs_dim = 11
 
-        if self.gs_pos_embed:
-            if self.feature_mask[0].item() and gs_dim > 3:
-                gs_dim -= 3
-            else:
-                self.gs_pos_embed = False
-
-        if not self.encode_gs:
-            self.hid_dim = gs_dim
-
-        self.encoder_cnn_gs = Gs_Encoder(gs_dim, self.hid_dim)
-        self.decoder_gs = Gs_Decoder(gs_dim)
+        self.encoder_gs = Gs_Encoder(gs_dim, self.hid_dim)
+        self.decoder_gs = Gs_Decoder(gs_dim, self.hid_dim)
 
         self.fc1 = nn.Linear(self.hid_dim, self.hid_dim)
         self.fc2 = nn.Linear(self.hid_dim, self.hid_dim)
@@ -324,47 +297,39 @@ class SlotAttentionAutoEncoder(nn.Module):
         
         self.slot_attention = SlotAttention(
             num_slots=self.num_slots,
-            dim=self.hid_dim,
+            dim=128,
             iters=self.num_iters,
             eps = 1e-8, 
-            hidden_dim = 128)
+            hidden_dim = 256)
         
-        self.slot_broadcast = Gs_Slot_Broadcast(gs_dim, self.hid_dim)
+        # self.slot_broadcast = Gs_Slot_Broadcast(gs_dim, self.hid_dim)
 
         self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
 
-    def forward(self, gs, pos, Ks, w2cs, mask=None):
+    def forward(self, gs:torch.Tensor, pos:torch.Tensor, Ks:torch.Tensor, w2cs:torch.Tensor, mask=None):
         # gs: [B, G, D]
-        # pos_embed: [B, G, 3, 1]
+        # pos: [B, G, 3]
         # mask: [B, G]
+        B,G,D = gs.shape
 
-        if self.gs_pos_embed:
-            gs = gs[:,:,3:]
+        features = gs[:,:,3:]
+        copy = gs[:,:,:11]
 
-        if self.encode_gs:
-            # Convolutional encoder with position embedding.
-            x = self.encoder_cnn_gs(gs, pos)  # CNN Backbone.
-            x = nn.LayerNorm(x.shape[1:]).to(gs.device)(x)
-            x = self.fc1(x)
-            x = F.relu(x)
-            x = self.fc2(x)  # Feedforward network on set.
-            # [B, G, D]
-        else:
-            # Inject raw 4DGS.
-            if self.gs_pos_embed:
-                x = self.encoder_pos(gs, pos)
-            else:
-                x = gs
-            # [B, G, D]
+        x = self.encoder_gs(features, pos)
             
         # Slot Attention module.
         slots = self.slot_attention(x, mask) # [B, N_S, D]
 
-        # Slot broadcaster MLP.
-        # slots = self.slot_broadcast(slots) # (B, N_S * G, D)
-        
+        # Broadcast slots to all pos
+        slots = slots.unsqueeze(-2).repeat(1,1,G,1) # [B, N_S, G, D]
+
         # Slot gs decoder
-        gs = self.decoder_gs(slots)
+        slots = self.decoder_gs(slots, pos.unsqueeze(1)) # [B, N_S, G, D]
+        gs = slots.sum(1)[:,:,8:11] / self.num_slots
+        
+        gs = torch.cat([copy,gs], dim=-1)
+        copy = copy.unsqueeze(1).repeat(1,self.num_slots,1,1)
+        slots = torch.cat([copy,slots[:,:,:,8:11]], dim=-1)
 
         # Slot decoder.
         # x = self.decoder_cnn(slots) # [B*N_S, W, H, CHANNEL+1]
