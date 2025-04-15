@@ -305,17 +305,8 @@ class SlotAttentionAutoEncoder(nn.Module):
         feature_len = torch.tensor([3, 4, 3, 1, 3, 3], dtype=torch.int32)
         gs_dim = feature_len[self.feature_mask].sum().item()
 
-        if self.gs_pos_embed:
-            if self.feature_mask[0].item() and gs_dim > 3:
-                gs_dim -= 3
-            else:
-                self.gs_pos_embed = False
-
-        if not self.encode_gs:
-            self.hid_dim = gs_dim
-
-        self.encoder_cnn_gs = Gs_Encoder(gs_dim, self.hid_dim)
-        self.decoder_gs = Gs_Decoder(gs_dim)
+        # self.encoder_cnn_gs = Gs_Encoder(gs_dim, self.hid_dim)
+        # self.decoder_gs = Gs_Decoder(gs_dim)
 
         self.fc1 = nn.Linear(self.hid_dim, self.hid_dim)
         self.fc2 = nn.Linear(self.hid_dim, self.hid_dim)
@@ -324,12 +315,12 @@ class SlotAttentionAutoEncoder(nn.Module):
         
         self.slot_attention = SlotAttention(
             num_slots=self.num_slots,
-            dim=self.hid_dim,
+            dim=gs_dim,
             iters=self.num_iters,
             eps = 1e-8, 
             hidden_dim = 128)
         
-        self.slot_broadcast = Gs_Slot_Broadcast(gs_dim, self.hid_dim)
+        # self.slot_broadcast = Gs_Slot_Broadcast(gs_dim, self.hid_dim)
 
         self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
 
@@ -338,40 +329,25 @@ class SlotAttentionAutoEncoder(nn.Module):
         # pos_embed: [B, G, 3, 1]
         # mask: [B, G]
 
-        if self.gs_pos_embed:
-            gs = gs[:,:,3:]
-
-        if self.encode_gs:
-            # Convolutional encoder with position embedding.
-            x = self.encoder_cnn_gs(gs, pos)  # CNN Backbone.
-            x = nn.LayerNorm(x.shape[1:]).to(gs.device)(x)
-            x = self.fc1(x)
-            x = F.relu(x)
-            x = self.fc2(x)  # Feedforward network on set.
-            # [B, G, D]
-        else:
-            # Inject raw 4DGS.
-            if self.gs_pos_embed:
-                x = self.encoder_pos(gs, pos)
-            else:
-                x = gs
-            # [B, G, D]
+        x = gs
             
         # Slot Attention module.
         slots = self.slot_attention(x, mask) # [B, N_S, D]
+        print(gs[0].min(dim=-2))
+        exit()
 
         # Slot broadcaster MLP.
         # slots = self.slot_broadcast(slots) # (B, N_S * G, D)
         
         # Slot gs decoder
-        gs = self.decoder_gs(slots)
+        # gs = self.decoder_gs(slots)
 
         # Slot decoder.
         # x = self.decoder_cnn(slots) # [B*N_S, W, H, CHANNEL+1]
 
         # Slot renderer.
         recon_combined = []
-        for batch,ks,w2c in zip(gs,Ks,w2cs):
+        for batch,ks,w2c in zip(slots,Ks,w2cs):
             means, quats, scales, opacities, colors = torch.split(batch, [3,4,3,1,3], dim=-1)
             recon_combined.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
         recon_combined = torch.stack(recon_combined,dim=0)

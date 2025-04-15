@@ -114,14 +114,10 @@ def Trainer(rank, world_size, cfg):
                 # Get inputs and lengths
                 gt_imgs = sample['gt_imgs'].to(device)
 
-                if cfg.attention.use_all_gs:   
-                    gs = sample['all_gs']
-                    mask = sample['all_mask']
-                    pos_embed = sample['all_gs_pos']
-                else:
-                    gs = sample['fg_gs']
-                    mask = sample['fg_mask']
-                    pos_embed = sample['fg_gs_pos']
+                # if cfg.attention.use_all_gs:   
+                gs = sample['gs']
+                mask = sample['mask']
+                pos_embed = sample['gs_pos']
                 
                 Ks = sample['Ks']
                 w2cs = sample['w2cs']
