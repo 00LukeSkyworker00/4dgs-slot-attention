@@ -1,10 +1,7 @@
-import numpy as np
 from torch import nn
 import torch
 import torch.nn.functional as F
 from renderer import *
-
-# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class SlotAttention(nn.Module):
     def __init__(self, num_slots, dim, iters = 3, eps = 1e-8, hidden_dim = 128):
@@ -71,31 +68,6 @@ class SlotAttention(nn.Module):
 
         return slots
 
-def build_grid(resolution):
-    ranges = [np.linspace(0., 1., num=res) for res in resolution]
-    grid = np.meshgrid(*ranges, sparse=False, indexing="ij")
-    grid = np.stack(grid, axis=-1)
-    grid = np.reshape(grid, [resolution[0], resolution[1], -1])
-    grid = np.expand_dims(grid, axis=0)
-    grid = grid.astype(np.float32)
-    return torch.from_numpy(np.concatenate([grid, 1.0 - grid], axis=-1))
-
-"""Adds soft positional embedding with learnable projection."""
-class SoftPositionEmbed(nn.Module):
-    def __init__(self, hidden_size, resolution):
-        """Builds the soft position embedding layer.
-        Args:
-        hidden_size: Size of input feature dimension.
-        resolution: Tuple of integers specifying width and height of grid.
-        """
-        super().__init__()
-        self.embedding = nn.Linear(4, hidden_size, bias=True)
-        self.grid = build_grid(resolution)
-
-    def forward(self, inputs):
-        grid = self.embedding(self.grid.to(inputs.device))
-        return inputs + grid
-
 class Gs_PositionEmbed(nn.Module):    
     def __init__(self, pos_dim, hidden_dim, feature_dim):
         super().__init__()
@@ -104,6 +76,10 @@ class Gs_PositionEmbed(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, feature_dim),
         )
+        ### Try this!!!! ####
+        # self.embedding = nn.Sequential(
+        #     nn.Linear(pos_dim, feature_dim),
+        # )
 
     def forward(self, input, pos):
         embedding = self.embedding(pos)
@@ -184,67 +160,10 @@ class Gs_Mask_Decoder(nn.Module):
         mask = nn.Softmax(dim=1)(mask)
         return mask # (B, N_S, N_G, 1)
 
-class Gs_Slot_Broadcast(nn.Module):
-    def __init__(self, slot_dim, hid_dim):
-        super(Gs_Slot_Broadcast, self).__init__()
-        pass
-
-    def forward(self, slots, pos):
-        pass
-
-class GS_2D_Slot_Broadcast(nn.Module):
-    def __init__(self, num_slots, slot_size, grid_size=8):
-        super(GS_2D_Slot_Broadcast, self).__init__()
-        self.num_slots = num_slots
-        self.slot_size = slot_size
-        self.grid_size = grid_size
-        
-        # Learnable projection for each slot to predict soft assignment over the grid
-        self.projection_mlp = nn.Sequential(
-            nn.Linear(slot_size, 128),
-            nn.ReLU(),
-            nn.Linear(128, grid_size ** 2)  # Predicts soft assignments for each grid point
-        )
-        
-        # Optional feature transformation to adjust slot features before broadcasting
-        self.feature_transform = nn.Linear(slot_size, slot_size)
-
-    def forward(self, slots):
-        """
-        slots: [B, N, D]  ->  Returns: [B, N, 8, 8, D]
-        """
-        batch_size = slots.size(0)
-        
-        # Transform the slot features before broadcasting
-        transformed_slots = self.feature_transform(slots)  # Shape: [B, N, D]
-        
-        # Predict the soft assignment for each slot across the grid
-        soft_assignments = self.projection_mlp(transformed_slots)  # Shape: [B, N, 8*8]
-        
-        # Reshape to [B, N, 8, 8] for the grid assignments
-        soft_assignments = soft_assignments.view(batch_size, self.num_slots, self.grid_size, self.grid_size)
-        
-        # Apply softmax normalization along the spatial dimensions
-        soft_assignments = F.softmax(soft_assignments, dim=-1)  # Normalize across grid positions (8*8)
-        
-        # Broadcast the slot features across the grid
-        grid_features = torch.einsum("bnwh, bnd -> bnwhd", soft_assignments, transformed_slots)
-        
-        # Flatten B and N into a single dimension
-        grid_features = grid_features.view(batch_size * self.num_slots, self.grid_size, self.grid_size, self.slot_size)
-
-        return grid_features  # [B, N, 8, 8, D]
-
-"""Slot Attention-based auto-encoder for object discovery."""
 class SlotAttentionAutoEncoder(nn.Module):
     # def __init__(self, resolution, num_slots, num_iters, hid_dim):
     def __init__(self, data_cfg, cnn_cfg, attn_cfg):
-        """Builds the Slot Attention-based auto-encoder.
-        Args:
-        resolution: Tuple of integers specifying width and height of input image.
-        num_slots: Number of slots in Slot Attention.
-        num_iters: Number of iterations in Slot Attention.
-        """
+
         super().__init__()
         self.hid_dim = cnn_cfg.hid_dim
         self.gs_pos_embed = cnn_cfg.gs_pos_embed
@@ -277,8 +196,6 @@ class SlotAttentionAutoEncoder(nn.Module):
             eps = 1e-8, 
             hidden_dim = 256)
         
-        # self.slot_broadcast = Gs_Slot_Broadcast(gs_dim, self.hid_dim)
-
         self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
 
     def forward(self, gs:torch.Tensor, pos:torch.Tensor, Ks:torch.Tensor, w2cs:torch.Tensor, mask=None, inference=False):
@@ -304,10 +221,22 @@ class SlotAttentionAutoEncoder(nn.Module):
 
         # Slot gs decoder
         gray_weights = torch.tensor([0.299, 0.587, 0.114], device=gs_slot.device)
+        
+        # Retrieve slots color and Min-Max norm
+        colors = slots[:,:,:,11:14]
+        colors = (colors - colors.min()) / (colors.max() - colors.min())
+
+        # Apply original textures to colors
         textures = (gs_slot[:,:,:,11:14] * gray_weights).sum(dim=-1, keepdim=True)  # [B, N_S, G, 1]
-        colors = slots[:,:,:,11:14] * textures
+        colors = colors * textures
+
+        # # LayerNorm slots
         # slots = self.slot_norm(slots)
+
+        # # MLP Detection head for color
         # colors = self.color_decoder(slots, colors, pos) # [B, N_S, G, 3]
+
+        # MLP detection head for mask
         color_mask = self.mask_decoder(slots, pos) # [B, N_S, G, 1]
 
         # colors = nn.Sigmoid()(color_mask[:,:,:,0:3])
@@ -315,15 +244,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         colors = torch.sum(colors * color_mask, dim=1)
         gs = torch.cat([gs[:,:,:11],colors], dim=-1)
 
-        
-        # gs = torch.cat([copy,opacities,colors], dim=-1)
-        # copy = copy.unsqueeze(1).repeat(1,self.num_slots,1,1)
-        # slots = torch.cat([copy,opacities,colors], dim=-1)
-
-        # Slot decoder.
-        # x = self.decoder_cnn(slots) # [B*N_S, W, H, CHANNEL+1]
-
-        # Slot renderer.
+        # 3D Gaussian renderer
         recon_combined = []
         recon_slots = []
 
@@ -338,14 +259,5 @@ class SlotAttentionAutoEncoder(nn.Module):
                     means, quats, scales, opacities, colors = torch.split(slot, [3,4,3,1,3], dim=-1)
                     recon_slots.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
             recon_slots = torch.stack(recon_slots,dim=0)
-
-        
-
-        # # Undo combination of slot and batch dimension; split alpha masks.
-        # recons, masks = x.reshape(gs.shape[0], -1, x.shape[1], x.shape[2], x.shape[3]).split([3,1], dim=-1)
-        # # recons: [B, N_S, W, H, CHANNEL]   masks: [B, N_S, W, H, 1]
-        # # Normalize alpha masks over slots.
-        # masks = nn.Softmax(dim=1)(masks)
-        # recon_combined = torch.sum(recons * masks, dim=1)  # [B, W, H, CHANNEL].
 
         return recon_combined, recon_slots, color_code
