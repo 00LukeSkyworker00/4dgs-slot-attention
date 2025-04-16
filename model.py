@@ -109,29 +109,6 @@ class Gs_PositionEmbed(nn.Module):
         embedding = self.embedding(pos)
         return input + embedding
 
-class Encoder(nn.Module):
-    def __init__(self, resolution, hid_dim):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, hid_dim, 5, padding = 2)
-        self.conv2 = nn.Conv2d(hid_dim, hid_dim, 5, padding = 2)
-        self.conv3 = nn.Conv2d(hid_dim, hid_dim, 5, padding = 2)
-        self.conv4 = nn.Conv2d(hid_dim, hid_dim, 5, padding = 2)
-        self.encoder_pos = SoftPositionEmbed(hid_dim, resolution)
-
-    def forward(self, x):
-        x = x.permute(0,3,1,2)
-        x = self.conv1(x)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.relu(x)
-        x = self.conv3(x)
-        x = F.relu(x)
-        x = self.conv4(x)
-        x = F.relu(x)
-        x = x.permute(0,2,3,1)
-        x = self.encoder_pos(x)
-        x = torch.flatten(x, 1, 2)
-        return x
     
 class Gs_Encoder(nn.Module):
     def __init__(self, gs_dim, hid_dim):
@@ -151,52 +128,13 @@ class Gs_Encoder(nn.Module):
         x = self.mlp(x)
         x = self.encoder_pos(x, pos)
         return x
-
-class Decoder(nn.Module):
-    def __init__(self, hid_dim, resolution):
-        super().__init__()
-        self.conv1 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
-        self.conv2 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
-        self.conv3 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
-        self.conv4 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(2, 2), padding=2, output_padding=1)
-        self.conv5 = nn.ConvTranspose2d(hid_dim, hid_dim, 5, stride=(1, 1), padding=2)
-        self.conv6 = nn.ConvTranspose2d(hid_dim, 4, 3, stride=(1, 1), padding=1)
-        
-        # nn.init.kaiming_normal_(self.conv1.weight)
-        # nn.init.kaiming_normal_(self.conv2.weight)
-        # nn.init.kaiming_normal_(self.conv3.weight)
-        # nn.init.kaiming_normal_(self.conv4.weight)
-        # nn.init.kaiming_normal_(self.conv5.weight)
-        # nn.init.xavier_normal_(self.conv6.weight)
-        
-        self.decoder_initial_size = (8, 8)
-        self.decoder_pos = SoftPositionEmbed(hid_dim, self.decoder_initial_size)
-        self.resolution = resolution
-
-    def forward(self, x):
-        x = self.decoder_pos(x)
-        x = x.permute(0,3,1,2)
-        x = self.conv1(x)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.relu(x)
-#         x = F.pad(x, (4,4,4,4)) # no longer needed
-        x = self.conv3(x)
-        x = F.relu(x)
-        x = self.conv4(x)
-        x = F.relu(x)
-        x = self.conv5(x)
-        x = F.relu(x)
-        x = self.conv6(x)
-        x = x[:,:,:self.resolution[0], :self.resolution[1]]
-        x = x.permute(0,2,3,1)
-        return x
     
 class Gs_Decoder(nn.Module):
     def __init__(self, gs_dim, out_dim, hid_dim):
         super(Gs_Decoder, self).__init__()
         # Output: [x, y, z, scale(3), rot(3), opacity, color(3), ...]
         self.mlp = nn.Sequential(
+            nn.LayerNorm(gs_dim),
             nn.Linear(gs_dim, 64),
             nn.ReLU(),
             nn.Linear(64, out_dim),
@@ -207,7 +145,44 @@ class Gs_Decoder(nn.Module):
     def forward(self, slots, pos) -> torch.Tensor:
         slots = self.encoder_pos(slots, pos)
         gs = self.mlp(slots)
-        return gs # (B, N_S*N_G, D)
+        return gs # (B, N_S, N_G, D)
+    
+class Gs_Color_Decoder(nn.Module):
+    def __init__(self, gs_dim, hid_dim):
+        super(Gs_Color_Decoder, self).__init__()
+        # Output: [x, y, z, scale(3), rot(3), opacity, color(3), ...]
+        self.mlp = nn.Sequential(
+            nn.Linear(gs_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 3),
+        )
+        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, gs_dim)
+        self.offset_norm = nn.LayerNorm(3)
+
+
+    def forward(self, slots, colors, pos) -> torch.Tensor:
+        slots = self.encoder_pos(slots, pos)
+        offsets = self.mlp(slots)
+        offsets = self.offset_norm(offsets)
+        return colors + offsets * 0.005 # (B, N_S, N_G, 3)
+    
+class Gs_Mask_Decoder(nn.Module):
+    def __init__(self, gs_dim, hid_dim):
+        super(Gs_Mask_Decoder, self).__init__()
+        # Output: [x, y, z, scale(3), rot(3), opacity, color(3), ...]
+        self.mlp = nn.Sequential(
+            nn.Linear(gs_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
+        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, gs_dim)
+
+
+    def forward(self, slots, pos) -> torch.Tensor:
+        slots = self.encoder_pos(slots, pos)
+        mask = self.mlp(slots)
+        mask = nn.Softmax(dim=1)(mask)
+        return mask # (B, N_S, N_G, 1)
 
 class Gs_Slot_Broadcast(nn.Module):
     def __init__(self, slot_dim, hid_dim):
@@ -287,8 +262,11 @@ class SlotAttentionAutoEncoder(nn.Module):
         feature_len = torch.tensor([3, 4, 3, 1, 3, 3], dtype=torch.int32)
         gs_dim = 14
 
+        self.slot_norm = nn.LayerNorm(gs_dim)
+
         self.encoder_gs = Gs_Encoder(gs_dim, self.hid_dim)
-        self.decoder_gs = Gs_Decoder(gs_dim, 1, self.hid_dim)
+        self.color_decoder = Gs_Color_Decoder(gs_dim, self.hid_dim)
+        self.mask_decoder = Gs_Mask_Decoder(gs_dim, self.hid_dim)
         
         self.encoder_pos = Gs_PositionEmbed(3, self.hid_dim, gs_dim)
         
@@ -303,30 +281,37 @@ class SlotAttentionAutoEncoder(nn.Module):
 
         self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
 
-    def forward(self, gs:torch.Tensor, pos:torch.Tensor, Ks:torch.Tensor, w2cs:torch.Tensor, mask=None):
+    def forward(self, gs:torch.Tensor, pos:torch.Tensor, Ks:torch.Tensor, w2cs:torch.Tensor, mask=None, inference=False):
         # gs: [B, G, D]
         # pos: [B, G, 3]
         # mask: [B, G]
         B,G,D = gs.shape
 
+        pos = pos.unsqueeze(1)
         # x = self.encoder_gs(gs, pos)
         x = gs
 
         # Slot Attention module.
         slots = self.slot_attention(x, mask) # [B, N_S, D]
+        color_code = slots[:,:,11:14]
+        color_code = color_code.unsqueeze(2).repeat(1,1,10,1)
 
         # Broadcast slots to all pos
         slots = slots.unsqueeze(-2) # [B, N_S, D]
         slots = slots.repeat(1,1,G,1) # [B, N_S, G, D]
 
+        gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1)
+
         # Slot gs decoder
-        colors = slots[:,:,:,11:14]
-        color_mask = self.decoder_gs(slots, pos.unsqueeze(1)) # [B, N_S, G, 1]
+        gray_weights = torch.tensor([0.299, 0.587, 0.114], device=gs_slot.device)
+        textures = (gs_slot[:,:,:,11:14] * gray_weights).sum(dim=-1, keepdim=True)  # [B, N_S, G, 1]
+        colors = slots[:,:,:,11:14] * textures
+        # slots = self.slot_norm(slots)
+        # colors = self.color_decoder(slots, colors, pos) # [B, N_S, G, 3]
+        color_mask = self.mask_decoder(slots, pos) # [B, N_S, G, 1]
 
-        color_mask = nn.Softmax(dim=1)(color_mask)
-
-        gs_slot = gs[:,:,:11].unsqueeze(1).repeat(1,self.num_slots,1,1)
-        gs_slot = torch.cat([gs_slot,colors * color_mask], dim=-1)
+        # colors = nn.Sigmoid()(color_mask[:,:,:,0:3])
+        gs_slot = torch.cat([gs_slot[:,:,:,:11],colors * color_mask], dim=-1)
         colors = torch.sum(colors * color_mask, dim=1)
         gs = torch.cat([gs[:,:,:11],colors], dim=-1)
 
@@ -347,11 +332,12 @@ class SlotAttentionAutoEncoder(nn.Module):
             recon_combined.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
         recon_combined = torch.stack(recon_combined,dim=0)
 
-        # for batch,ks,w2c in zip(gs_slot,Ks,w2cs):
-        #     for slot in batch:
-        #         means, quats, scales, opacities, colors = torch.split(slot, [3,4,3,1,3], dim=-1)
-        #         recon_slots.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
-        # recon_slots = torch.stack(recon_slots,dim=0)
+        if inference:
+            for batch,ks,w2c in zip(gs_slot,Ks,w2cs):
+                for slot in batch:
+                    means, quats, scales, opacities, colors = torch.split(slot, [3,4,3,1,3], dim=-1)
+                    recon_slots.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
+            recon_slots = torch.stack(recon_slots,dim=0)
 
         
 
@@ -362,4 +348,4 @@ class SlotAttentionAutoEncoder(nn.Module):
         # masks = nn.Softmax(dim=1)(masks)
         # recon_combined = torch.sum(recons * masks, dim=1)  # [B, W, H, CHANNEL].
 
-        return recon_combined, recon_slots
+        return recon_combined, recon_slots, color_code

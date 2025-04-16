@@ -131,7 +131,7 @@ def Trainer(rank, world_size, cfg):
                 pos_embed = pos_embed.to(device)
 
                 # Forward pass through model
-                recon_combined, recon_slots = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
+                recon_combined, recon_slots, color_code = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
                 
                 # Loss calculation
                 loss = criterion(recon_combined, gt_imgs)
@@ -142,7 +142,7 @@ def Trainer(rank, world_size, cfg):
                 loss.backward()
                 optimizer.step()
 
-                del recon_slots
+                del recon_slots, color_code
 
             total_loss /= len(train_dataloader)
 
