@@ -8,4 +8,5 @@ imageio
 roma
 OmegaConf
 torchmetrics
-git+https://github.com/nerfstudio-project/gsplat.git
+scipy
+# git+https://github.com/nerfstudio-project/gsplat.git
