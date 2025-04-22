@@ -132,38 +132,29 @@ class Gs_Decoder(nn.Module):
         mask = out[:,:,:,3:4]
         colors = torch.sigmoid(colors)
         mask = torch.softmax(mask, dim=1)
-        return colors, mask # (B, N_S, G, 4)
+        return colors, mask # (B, N_S, G, 3), (B, N_S, G, 1)
     
 class Gs_Color_Decoder(nn.Module):
     def __init__(self, gs_dim, hid_dim):
         super(Gs_Color_Decoder, self).__init__()
-        self.mlp1 = nn.Sequential(
-            nn.Linear(gs_dim, 256),
+        self.mlp = nn.Sequential(
+            nn.Linear(gs_dim, 128),
             nn.ReLU(),
-            nn.Linear(256, 256),
+            nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(256, 3),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 3),
         )
-        self.norm1 = nn.LayerNorm(3)
-        # self.mlp2 = nn.Sequential(
-        #     nn.Linear(3, 256),
-        #     nn.ReLU(),
-        #     nn.Linear(256, 256),
-        #     nn.ReLU(),
-        #     nn.Linear(256, 3),
-        # )
-        # self.norm2 = nn.LayerNorm(3)
         self.encoder_pos = Gs_PositionEmbed(3, hid_dim, gs_dim)
-        self.gate = nn.Parameter(torch.tensor(0.5))
-
 
     def forward(self, slots, colors, pos) -> torch.Tensor:
         slots = self.encoder_pos(slots, pos)
-        offset = self.mlp1(slots)
-        offset = self.norm1(offset)
-        colors = colors * (1 - self.gate) + offset * self.gate
-        colors =torch.sigmoid(colors)
-        return colors # (B, N_S, N_G, 3)
+        colors = self.mlp(slots)
+        # colors =torch.sigmoid(colors)
+        return colors # (B, N_S, G, 3)
     
 class Gs_Mask_Decoder(nn.Module):
     def __init__(self, gs_dim, hid_dim):
@@ -180,7 +171,7 @@ class Gs_Mask_Decoder(nn.Module):
         slots = self.encoder_pos(slots, pos)
         mask = self.mlp(slots)
         mask = torch.softmax(mask, dim=1)
-        return mask # (B, N_S, N_G, 1)
+        return mask # (B, N_S, G, 1)
 
 class SlotAttentionAutoEncoder(nn.Module):
     # def __init__(self, resolution, num_slots, num_iters, hid_dim):
@@ -205,9 +196,9 @@ class SlotAttentionAutoEncoder(nn.Module):
 
         self.slot_norm = nn.LayerNorm(gs_dim)
 
-        self.encoder_gs = Gs_Encoder(gs_dim, self.hid_dim)
+        # self.encoder_gs = Gs_Encoder(gs_dim, self.hid_dim)
         # self.decoder = Gs_Decoder(gs_dim, self.hid_dim)
-        # self.color_decoder = Gs_Color_Decoder(gs_dim, self.hid_dim)
+        self.color_decoder = Gs_Color_Decoder(gs_dim, self.hid_dim)
         self.mask_decoder = Gs_Mask_Decoder(gs_dim, self.hid_dim)
         
         self.encoder_pos = Gs_PositionEmbed(3, self.hid_dim, gs_dim)
@@ -251,16 +242,16 @@ class SlotAttentionAutoEncoder(nn.Module):
         gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, D]
 
         # Apply original textures to colors
-        gray_weights = torch.tensor([0.299, 0.587, 0.114], device=gs_slot.device)
-        textures = (gs_slot[:,:,:,11:14] * gray_weights).sum(dim=-1, keepdim=True)  # [B, N_S, G, 1]
-        colors = colors * textures
+        # gray_weights = torch.tensor([0.299, 0.587, 0.114], device=gs_slot.device)
+        # textures = (gs_slot[:,:,:,11:14] * gray_weights).sum(dim=-1, keepdim=True)  # [B, N_S, G, 1]
+        # colors = colors * textures
 
 
         # # LayerNorm slots
         # slots = self.slot_norm(slots)
 
         # # MLP detection head for color
-        # colors = self.color_decoder(slots, colors, pos) # [B, N_S, G, 3]
+        colors = self.color_decoder(slots, colors, pos) # [B, N_S, G, 3]
 
         # MLP detection head for mask
         color_mask = self.mask_decoder(slots, pos) # [B, N_S, G, 1]
@@ -268,11 +259,12 @@ class SlotAttentionAutoEncoder(nn.Module):
         # MLP detection head for color and mask
         # colors, color_mask = self.decoder(slots,pos)
         
-        gs_slot = torch.cat([gs_slot[:,:,:,:10],color_mask,colors], dim=-1)
-        colors = torch.sum(colors * color_mask, dim=1)
+        gs_slot = torch.cat([gs_slot[:,:,:,:10],color_mask,colors], dim=-1) # [B, N_S, G, D]
+        # gs = torch.reshape(B,self.num_slots*G,D) # [B, N_S*G, D]
         
-        gs[:,:,10] = 1.0
+        colors = torch.sum(colors * color_mask, dim=1)
         gs = torch.cat([gs[:,:,:11],colors], dim=-1)
+        # gs = torch.cat([gs[:,:,:10], torch.ones_like(gs[:,:,10:11])*0.5,colors], dim=-1)
 
         # 3D Gaussian renderer
         recon_combined = []

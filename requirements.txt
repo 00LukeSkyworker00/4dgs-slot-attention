@@ -11,4 +11,5 @@ torchmetrics
 scipy
 nerfview
 viser
+tensorboard
 # git+https://github.com/nerfstudio-project/gsplat.git
