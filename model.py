@@ -131,7 +131,7 @@ class Gs_Decoder(nn.Module):
         colors = out[:,:,:,:3]
         mask = out[:,:,:,3:4]
         colors = torch.sigmoid(colors)
-        mask = nn.Softmax(dim=1)(mask)
+        mask = torch.softmax(mask, dim=1)
         return colors, mask # (B, N_S, G, 4)
     
 class Gs_Color_Decoder(nn.Module):
@@ -179,7 +179,7 @@ class Gs_Mask_Decoder(nn.Module):
     def forward(self, slots, pos) -> torch.Tensor:
         slots = self.encoder_pos(slots, pos)
         mask = self.mlp(slots)
-        mask = nn.Softmax(dim=1)(mask)
+        mask = torch.softmax(mask, dim=1)
         return mask # (B, N_S, N_G, 1)
 
 class SlotAttentionAutoEncoder(nn.Module):
@@ -206,9 +206,9 @@ class SlotAttentionAutoEncoder(nn.Module):
         self.slot_norm = nn.LayerNorm(gs_dim)
 
         self.encoder_gs = Gs_Encoder(gs_dim, self.hid_dim)
-        self.decoder = Gs_Decoder(gs_dim, self.hid_dim)
+        # self.decoder = Gs_Decoder(gs_dim, self.hid_dim)
         # self.color_decoder = Gs_Color_Decoder(gs_dim, self.hid_dim)
-        # self.mask_decoder = Gs_Mask_Decoder(gs_dim, self.hid_dim)
+        self.mask_decoder = Gs_Mask_Decoder(gs_dim, self.hid_dim)
         
         self.encoder_pos = Gs_PositionEmbed(3, self.hid_dim, gs_dim)
         
@@ -233,23 +233,27 @@ class SlotAttentionAutoEncoder(nn.Module):
 
         # Slot Attention module.
         slots = self.slot_attention(x, mask) # [B, N_S, D]
-        color_code = slots[:,:,11:14]
-        color_code = color_code.unsqueeze(2).repeat(1,1,10,1)
+
+        # Retrieve slots color and Min-Max norm
+        colors = slots[:,:,11:14]
+        # colors = (colors - colors.min()) / (colors.max() - colors.min() + 1e-8) # [B, N_S, 3]
+
+        colors = colors.unsqueeze(-2)
+        colors = colors.repeat(1,1,G,1) # [B, N_S, G, 3]
+        color_code = colors.repeat(1,1,self.num_slots,1) # [B, N_S, N_S, 3]
+        color_code = (color_code - color_code.min()) / (color_code.max() - color_code.min() + 1e-8) # [B, N_S, 3]
 
         # Broadcast slots to all pos
         slots = slots.unsqueeze(-2) # [B, N_S, D]
         slots = slots.repeat(1,1,G,1) # [B, N_S, G, D]
 
-        gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1)
+        # Copy gs to match slots count
+        gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, D]
 
-        
-        # Retrieve slots color and Min-Max norm
-        # colors = slots[:,:,:,11:14]
-
-        # # Apply original textures to colors
-        # gray_weights = torch.tensor([0.299, 0.587, 0.114], device=gs_slot.device)
-        # textures = (gs_slot[:,:,:,11:14] * gray_weights).sum(dim=-1, keepdim=True)  # [B, N_S, G, 1]
-        # colors = colors * textures
+        # Apply original textures to colors
+        gray_weights = torch.tensor([0.299, 0.587, 0.114], device=gs_slot.device)
+        textures = (gs_slot[:,:,:,11:14] * gray_weights).sum(dim=-1, keepdim=True)  # [B, N_S, G, 1]
+        colors = colors * textures
 
 
         # # LayerNorm slots
@@ -258,15 +262,16 @@ class SlotAttentionAutoEncoder(nn.Module):
         # # MLP detection head for color
         # colors = self.color_decoder(slots, colors, pos) # [B, N_S, G, 3]
 
-        # # MLP detection head for mask
-        # color_mask = self.mask_decoder(slots, pos) # [B, N_S, G, 1]
+        # MLP detection head for mask
+        color_mask = self.mask_decoder(slots, pos) # [B, N_S, G, 1]
 
         # MLP detection head for color and mask
-        colors, color_mask = self.decoder(slots,pos)
-
-        # colors = nn.Sigmoid()(color_mask[:,:,:,0:3])
-        gs_slot = torch.cat([gs_slot[:,:,:,:11],colors * color_mask], dim=-1)
+        # colors, color_mask = self.decoder(slots,pos)
+        
+        gs_slot = torch.cat([gs_slot[:,:,:,:10],color_mask,colors], dim=-1)
         colors = torch.sum(colors * color_mask, dim=1)
+        
+        gs[:,:,10] = 1.0
         gs = torch.cat([gs[:,:,:11],colors], dim=-1)
 
         # 3D Gaussian renderer
@@ -285,4 +290,4 @@ class SlotAttentionAutoEncoder(nn.Module):
                     recon_slots.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
             recon_slots = torch.stack(recon_slots,dim=0)
 
-        return recon_combined, recon_slots, color_code
+        return recon_combined, recon_slots, color_code, gs, gs_slot

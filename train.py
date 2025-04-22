@@ -2,6 +2,7 @@ import os
 import shutil
 import glob
 import argparse
+
 from dataset import *
 from model import *
 from tqdm import tqdm
@@ -9,6 +10,9 @@ import time
 import datetime
 import torch.optim as optim
 import torch
+import torchvision
+from torchvision import transforms
+from torchvision.transforms import InterpolationMode
 from omegaconf import OmegaConf
 
 import torch.multiprocessing as mp
@@ -34,6 +38,7 @@ def Trainer(rank, world_size, cfg):
     init_process_group(backend='nccl', rank=rank, world_size=world_size)
 
     train_list = []
+    
     for i in range(cfg.dataset.start_idx, cfg.dataset.end_idx+1):
         path = os.path.join(cfg.dataset.dir,f'movi_a_{i:04}_anoMask')
         if not os.path.exists(path):
@@ -81,11 +86,18 @@ def Trainer(rank, world_size, cfg):
         sampler=train_sampler, collate_fn=collate_fn_padd
         )
     
+
     # Setup tensorboard and save environment
     if rank == 0:
         writer = SummaryWriter(os.path.join(cfg.output.dir, 'logs'))
+        val_set = train_set[0]
+        val_gt = val_set['gt_imgs']
+        val_gt = val_gt.permute(2,0,1)
+        val_gs = torch.cat(val_set['all_gs'], dim=-1).to(device).unsqueeze(0)
+        val_pos_embed = val_set['all_gs'][0].to(device).unsqueeze(0)
+        val_Ks = val_set['Ks'].unsqueeze(0)
+        val_w2cs = val_set['w2cs'].unsqueeze(0)
         save_env(cfg)
-
     i = start_epoch * len(train_dataloader)  # Resume step count
 
     try:
@@ -113,28 +125,17 @@ def Trainer(rank, world_size, cfg):
 
                 # Get inputs and lengths
                 gt_imgs = sample['gt_imgs'].to(device)
-
-                if cfg.attention.use_all_gs:   
-                    gs = sample['all_gs']
-                    mask = sample['all_mask']
-                    pos_embed = sample['all_gs_pos']
-                else:
-                    gs = sample['fg_gs']
-                    mask = sample['fg_mask']
-                    pos_embed = sample['fg_gs_pos']
+                gs = sample['all_gs'].to(device)
+                mask = sample['all_mask'].to(device)
+                pos_embed = sample['all_gs_pos'].to(device)
                 
                 Ks = sample['Ks']
                 w2cs = sample['w2cs']
 
-                gs = gs.to(device)
-                mask = mask.to(device)
-                pos_embed = pos_embed.to(device)
-
                 # Forward pass through model
-                recon_combined, recon_slots, color_code = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
-                
+                _, _, _, recon_gs, _ = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
                 # Loss calculation
-                loss = criterion(recon_combined, gt_imgs)
+                loss = criterion(recon_gs[:,:,11:14], gs[:,:,11:14])
                 # print(loss.item())
                 total_loss += loss.item()
 
@@ -142,17 +143,34 @@ def Trainer(rank, world_size, cfg):
                 loss.backward()
                 optimizer.step()
 
-                del recon_slots, color_code
-
             total_loss /= len(train_dataloader)
 
             if rank == 0:   # Print and save only from rank 0
                 print ("Epoch: {}, Loss: {}, Time: {}".format(epoch, total_loss,
                     datetime.timedelta(seconds=time.time() - start)))
-                
+            
                 writer.add_scalar('Loss/train', total_loss, epoch)
 
-                if not epoch % cfg.output.save_interval:
+                if not epoch % cfg.output.save_interval:                    
+                    (
+                        recon_combined,
+                        recon_slots,
+                        color_code,
+                        _,
+                        _
+                        ) = model(val_gs, val_pos_embed, Ks=val_Ks, w2cs= val_w2cs,inference=True)
+                    
+                    recon_combined = recon_combined[0].permute(2,0,1)
+                    color_code = color_code[0].permute(2,1,0)
+                    color_code = transforms.Resize((128, 128),interpolation=InterpolationMode.NEAREST_EXACT)(color_code)
+                    recon_slots = recon_slots.permute(0,3,1,2)
+
+                    result = torchvision.utils.make_grid(torch.stack([val_gt,recon_combined,color_code],dim=0))
+                    writer.add_image('result', result, epoch)
+                    recon_slots = torchvision.utils.make_grid(recon_slots, nrow=5)
+                    writer.add_image('slots_recon', recon_slots, epoch)
+
+                    del recon_combined, recon_slots, color_code
 
                     torch.save({
                         'epoch': epoch,  # Save the current epoch

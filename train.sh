@@ -1,6 +1,6 @@
 #!/bin/bash
 
-NAME=movi_a_test_04_18_gs_color_compete_share_decoder
+NAME=movi_a_test_04_22_gs_color_compete_opaque
 DATA_DIR=/home/skyworker/result/4DGS_SlotAttention/shape_of_motion
 OUT_DIR=/home/skyworker/result/4DGS_SlotAttention/slot_4dgs
 

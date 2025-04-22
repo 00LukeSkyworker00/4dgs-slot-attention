@@ -38,7 +38,7 @@ class Renderer():
             opacities=opacities.squeeze(-1),
             colors=colors,
             viewmats=w2cs,
-            backgrounds=None,
+            backgrounds=bg_color,
             Ks=Ks,
             width=w,
             height=h,
@@ -46,7 +46,6 @@ class Renderer():
             render_mode="RGB")
 
         # render_colors, alphas, info = rasterization(means,quats,scales,opacities,colors,w2c,Ks,W,H)
-
         img = torch.cat([render_colors,alphas], dim=-1)
 
         if self.requires_grad:
