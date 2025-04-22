@@ -9,4 +9,6 @@ roma
 OmegaConf
 torchmetrics
 scipy
+nerfview
+viser
 # git+https://github.com/nerfstudio-project/gsplat.git
