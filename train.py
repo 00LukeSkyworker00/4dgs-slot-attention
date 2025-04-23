@@ -143,7 +143,7 @@ def Trainer(rank, world_size, cfg):
                 loss.backward()
                 optimizer.step()
 
-                del recon_combined
+                del recon_combined, gs_recon
 
             total_loss /= len(train_dataloader)
 

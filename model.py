@@ -256,7 +256,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         # MLP detection head for color and mask
         # colors, color_mask = self.decoder(slots,pos)
         
-        gs_slot = torch.cat([gs_slot[:,:,:,:11],color_mask*colors, color_mask, color_mask, color_mask], dim=-1) # [B, N_S, G, D+3]
+        gs_slot = torch.cat([gs_slot[:,:,:,:11],colors, color_mask, color_mask, color_mask], dim=-1) # [B, N_S, G, D+3]
         # gs_slot = torch.cat([gs_slot[:,:,:,:10],color_mask,colors], dim=-1) # [B, N_S, G, D]
         # gs = gs_slot.reshape(B,self.num_slots*G,D) # [B, N_S*G, D]
 
