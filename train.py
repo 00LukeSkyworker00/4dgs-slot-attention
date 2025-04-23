@@ -133,15 +133,17 @@ def Trainer(rank, world_size, cfg):
                 w2cs = sample['w2cs']
 
                 # Forward pass through model
-                _, _, _, recon_gs, _ = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
+                recon_combined, _, _, _, _ = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
                 # Loss calculation
-                loss = criterion(recon_gs[:,:,11:14], gs[:,:,11:14])
+                loss = criterion(recon_combined, gt_imgs)
                 # print(loss.item())
                 total_loss += loss.item()
 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+                
+                del recon_combined
 
             total_loss /= len(train_dataloader)
 

@@ -20,7 +20,7 @@ output:
 training:
   seed: 0
   batch_size: 12
-  epochs: 1000
+  epochs: 2000
   num_workers: 0
   lr: 0.0004
   warmup: 10000
