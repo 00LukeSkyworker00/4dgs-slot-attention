@@ -160,11 +160,11 @@ class Gs_Mask_Decoder(nn.Module):
             nn.ReLU(),
             nn.Linear(128, 1),
         )
-        self.encoder_pos = Gs_PositionEmbed(3, hid_dim, gs_dim)
+        self.encoder_pos = Gs_PositionEmbed(gs_dim, hid_dim, gs_dim)
 
 
-    def forward(self, slots, pos) -> torch.Tensor:
-        slots = self.encoder_pos(slots, pos)
+    def forward(self, slots, gs) -> torch.Tensor:
+        slots = self.encoder_pos(slots, gs)
         mask = self.mlp(slots)
         mask = torch.softmax(mask, dim=1)
         return mask # (B, N_S, G, 1)
@@ -215,6 +215,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         B,G,D = gs.shape
 
         pos = pos.unsqueeze(1)
+        feature = gs.unsqueeze(1)
         # x = self.encoder_gs(gs, pos)
         x = gs
 
@@ -251,7 +252,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         # colors = colors * textures # [B, N_S, G, 3]
 
         # MLP detection head for mask
-        color_mask = self.mask_decoder(slots, pos) # [B, N_S, G, 1]
+        color_mask = self.mask_decoder(slots, feature) # [B, N_S, G, 1]
 
         # MLP detection head for color and mask
         # colors, color_mask = self.decoder(slots,pos)

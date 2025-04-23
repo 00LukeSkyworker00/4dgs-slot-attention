@@ -1,6 +1,6 @@
 #!/bin/bash
 
-NAME=movi_a_test_04_23_gs_color_compete_concat_slot
+NAME=movi_a_test_04_23_gs_color_compete_feature_embedding
 DATA_DIR=/home/skyworker/result/4DGS_SlotAttention/shape_of_motion
 OUT_DIR=/home/skyworker/result/4DGS_SlotAttention/slot_4dgs
 
