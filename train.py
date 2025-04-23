@@ -124,7 +124,7 @@ def Trainer(rank, world_size, cfg):
                 # print(sample['gt_imgs'].shape)
 
                 # Get inputs and lengths
-                gt_imgs = sample['gt_imgs'].to(device)
+                # gt_imgs = sample['gt_imgs'].to(device)
                 gs = sample['all_gs'].to(device)
                 mask = sample['all_mask'].to(device)
                 pos_embed = sample['all_gs_pos'].to(device)
@@ -135,7 +135,7 @@ def Trainer(rank, world_size, cfg):
                 # Forward pass through model
                 recon_combined, _, _, gs_recon, _ = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
                 # Loss calculation
-                loss = criterion(recon_combined, gt_imgs)
+                loss = criterion(gs_recon, gs)
                 # print(loss.item())
                 total_loss += loss.item()
 
