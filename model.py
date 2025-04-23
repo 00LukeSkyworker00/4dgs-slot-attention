@@ -256,16 +256,18 @@ class SlotAttentionAutoEncoder(nn.Module):
         # MLP detection head for color and mask
         # colors, color_mask = self.decoder(slots,pos)
         
-        gs_slot = torch.cat([gs_slot[:,:,:,:10],color_mask,colors], dim=-1) # [B, N_S, G, D]
-        gs = gs_slot.reshape(B,self.num_slots*G,D) # [B, N_S*G, D]
+        gs_slot = torch.cat([gs_slot[:,:,:,:11],color_mask*colors, color_mask, color_mask, color_mask], dim=-1) # [B, N_S, G, D+3]
+        # gs_slot = torch.cat([gs_slot[:,:,:,:10],color_mask,colors], dim=-1) # [B, N_S, G, D]
+        # gs = gs_slot.reshape(B,self.num_slots*G,D) # [B, N_S*G, D]
 
-        # colors = torch.sum(colors * color_mask, dim=1)
-        # gs = torch.cat([gs[:,:,:11],colors], dim=-1)
+        colors = torch.sum(colors * color_mask, dim=1)
+        gs = torch.cat([gs[:,:,:11],colors], dim=-1)
         # gs = torch.cat([gs[:,:,:10], torch.ones_like(gs[:,:,10:11])*0.5,colors], dim=-1)
 
         # 3D Gaussian renderer
         recon_combined = []
         recon_slots = []
+        slots_alpha = []
 
         for batch,ks,w2c in zip(gs,Ks,w2cs):
             means, quats, scales, opacities, colors = torch.split(batch, [3,4,3,1,3], dim=-1)
@@ -275,8 +277,11 @@ class SlotAttentionAutoEncoder(nn.Module):
         if inference:
             for batch,ks,w2c in zip(gs_slot,Ks,w2cs):
                 for slot in batch:
-                    means, quats, scales, opacities, colors = torch.split(slot, [3,4,3,1,3], dim=-1)
+                    means, quats, scales, opacities, colors,alpha = torch.split(slot, [3,4,3,1,3,3], dim=-1)
                     recon_slots.append(self.renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
+                    slots_alpha.append(self.renderer.rasterize_gs(means, quats, scales, opacities, alpha,ks,w2c))
             recon_slots = torch.stack(recon_slots,dim=0)
+            slots_alpha = torch.stack(slots_alpha,dim=0)[:,:,:,0:1]
+            recon_slots = torch.cat([recon_slots, slots_alpha], dim=-1)
 
         return recon_combined, recon_slots, color_code, gs, gs_slot
