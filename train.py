@@ -133,10 +133,12 @@ def Trainer(rank, world_size, cfg):
                 w2cs = sample['w2cs']
 
                 # Forward pass through model
-                recon_combined, _, _, gs_recon, _ = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
+                recon_combined, _, _, gs_recon, _, loss = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
                 # Loss calculation
-                loss = criterion(gs_recon, gs)
-                # print(loss.item())
+                # pos_loss = criterion(gs_recon[:,:,:3], gs[:,:,:3])
+                # color_loss = criterion(gs_recon[:,:,11:14], gs[:,:,11:14])
+                loss += criterion(gs_recon, gs)
+
                 total_loss += loss.item()
 
                 optimizer.zero_grad()
@@ -158,6 +160,7 @@ def Trainer(rank, world_size, cfg):
                         recon_combined,
                         recon_slots,
                         color_code,
+                        _,
                         _,
                         _
                         ) = model(val_gs, val_pos_embed, Ks=val_Ks, w2cs= val_w2cs,inference=True)
