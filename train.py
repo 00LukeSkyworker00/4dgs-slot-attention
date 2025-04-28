@@ -39,16 +39,14 @@ def Trainer(rank, world_size, cfg):
 
     train_list = []
     
-    for i in range(cfg.dataset.start_idx, cfg.dataset.end_idx+1):
+    for i in range(cfg.dataset.train_idx[0], cfg.dataset.train_idx[1] + 1):
         path = os.path.join(cfg.dataset.dir,f'movi_a_{i:04}_anoMask')
         if not os.path.exists(path):
             print(f"Path does not exist: {path}")
             continue
         train_set = ShapeOfMotion(path, cfg.dataset)
         train_list.append(train_set)
-        # print(train_set[0]['fg_gs'].shape)
     train_set = ConcatDataset(train_list)
-    # train_set = ShapeOfMotion(opt.data_dir)
     print(f"Number of scene in concat dataset: {len(train_set)}")
 
     # model = SlotAttentionAutoEncoder(resolution, opt.num_slots, opt.num_iters, train_set[0]['all_gs'].size(-1))
