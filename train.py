@@ -57,7 +57,8 @@ def Trainer(rank, world_size, cfg):
     model = model.to(device)
 
     # Wrap model in DDP
-    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+    model = DDP(model, device_ids=[rank])
+    # model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     # Loss function
     criterion = nn.MSELoss()
@@ -133,19 +134,21 @@ def Trainer(rank, world_size, cfg):
                 w2cs = sample['w2cs']
 
                 # Forward pass through model
-                recon_combined, _, _, gs_recon, _, loss = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
-                # Loss calculation
-                # pos_loss = criterion(gs_recon[:,:,:3], gs[:,:,:3])
-                # color_loss = criterion(gs_recon[:,:,11:14], gs[:,:,11:14])
-                loss += criterion(gs_recon, gs)
+                _, _, _, gs_recon, _, loss = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
 
-                total_loss += loss.item()
+                # Loss calculation
+                # loss += criterion(gs_recon, gs)
+                
+                pos_loss = criterion(gs_recon[:,:,:3], gs[:,:,:3])
+                color_loss = criterion(gs_recon[:,:,11:14], gs[:,:,11:14])
+                loss += pos_loss + color_loss
+                total_loss += loss.item()     
 
                 optimizer.zero_grad()
-                loss.backward()
+                loss.backward()                
                 optimizer.step()
-
-                del recon_combined, gs_recon
+            
+                del gs_recon, loss
 
             total_loss /= len(train_dataloader)
 

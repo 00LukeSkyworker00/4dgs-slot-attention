@@ -153,12 +153,9 @@ class ShapeOfMotion(Dataset):
 
 def collate_fn_padd(batch):
     
-    gt_imgs = [torch.tensor(t['gt_imgs'], dtype=torch.float32) for t in batch]
-    gt_imgs = torch.stack(gt_imgs)
-    Ks = [torch.tensor(t['Ks'], dtype=torch.float32) for t in batch]
-    Ks = torch.stack(Ks)
-    w2cs = [torch.tensor(t['w2cs'], dtype=torch.float32) for t in batch]
-    w2cs = torch.stack(w2cs)
+    gt_imgs = torch.stack([t['gt_imgs'] for t in batch])
+    Ks = torch.stack([t['Ks'] for t in batch])
+    w2cs = torch.stack([t['w2cs'] for t in batch])
 
     # Extract all_gs
     all_gs = []
