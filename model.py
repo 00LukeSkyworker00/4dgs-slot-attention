@@ -68,6 +68,49 @@ class SlotAttention(nn.Module):
 
         return slots
 
+class Gs_Embedding(nn.Module):    
+    def __init__(self, pos_dim, feature_dim, use_fourier=False):
+        super().__init__()
+        self.use_fourier = use_fourier
+        if use_fourier:
+            self.embedding = FourierEmbedding(pos_dim, 6, include_input=False)
+            self._out_dim = feature_dim + self.embedding.out_dim
+        else:
+            self.embedding = nn.Linear(pos_dim, feature_dim)
+            self._out_dim = feature_dim
+
+    @property
+    def out_dim(self) -> int:
+        return self._out_dim
+
+    def forward(self, input, pos):
+        # pos_min = pos.amin(dim=-2, keepdim=True).detach()
+        # pos_max = pos.amax(dim=-2, keepdim=True).detach()
+        # pos_norm = (pos.detach() - pos_min) / (pos_max - pos_min)
+        # pe = self.embedding(pos_norm)
+        pe = self.embedding(pos)
+        if self.use_fourier:
+            return torch.cat([input, pe], dim=-1)
+        else:
+            return input + pe
+        
+class TriPlaneEmbedding(nn.Module):
+    def __init__(self, feature_dim):
+        super().__init__()
+        self.xy = nn.Linear(2, feature_dim)
+        self.yz = nn.Linear(2, feature_dim)
+        self.zx = nn.Linear(2, feature_dim)
+
+    def forward(self, pos: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x = pos[:,:,:,0:1]
+        y = pos[:,:,:,1:2]
+        z = pos[:,:,:,2:3]
+        xy = self.xy(torch.cat([x,y], dim=-1).detach())
+        yz = self.yz(torch.cat([y,z], dim=-1).detach())
+        zx = self.zx(torch.cat([x,z], dim=-1).detach())
+        return xy, yz, zx
+
+
 class FourierEmbedding(nn.Module):
     """
     Fourier-feature positional embedding.
@@ -104,31 +147,6 @@ class FourierEmbedding(nn.Module):
 
         return torch.cat(embeds, dim=-1)
 
-class Gs_Embedding(nn.Module):    
-    def __init__(self, pos_dim, feature_dim, use_fourier=False):
-        super().__init__()
-        self.use_fourier = use_fourier
-        if use_fourier:
-            self.embedding = FourierEmbedding(pos_dim, 6, include_input=False)
-            self._out_dim = feature_dim + self.embedding.out_dim
-        else:
-            self.embedding = nn.Linear(pos_dim, feature_dim)
-            self._out_dim = feature_dim
-
-    @property
-    def out_dim(self) -> int:
-        return self._out_dim
-
-    def forward(self, input, pos):
-        pos_min = pos.amin(dim=-2, keepdim=True).detach()
-        pos_max = pos.amax(dim=-2, keepdim=True).detach()
-        pos_norm = (pos.detach() - pos_min) / (pos_max - pos_min)
-        pe = self.embedding(pos_norm)
-        if self.use_fourier:
-            return torch.cat([input, pe], dim=-1)
-        else:
-            return input + pe
-
 class Gs_Decoder(nn.Module):
     def __init__(self, slot_dim, hid_dim):
         super(Gs_Decoder, self).__init__()
@@ -139,21 +157,21 @@ class Gs_Decoder(nn.Module):
         #     nn.Linear(hid_dim,14+1)
         # )
 
-        self.pcm_head = nn.Sequential(
-            nn.Linear(slot_dim, hid_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hid_dim,3+3+1)
-        )
+        # self.pcm_head = nn.Sequential(
+        #     nn.Linear(slot_dim, hid_dim),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(hid_dim,3+3+1)
+        # )
 
-        # unit_dim = int(slot_dim / 4)
-        # self.pos_dim = unit_dim * 1
-        # self.col_dim = unit_dim * 3
+        self.pcm_head = TriPlane_Decoder(slot_dim, hid_dim, 1+3+1)
 
-        # self.pos_head = Pos_Decoder(self.pos_dim, hid_dim)
-        # self.col_head = Col_Decoder(self.col_dim, hid_dim)
+        # self.embedding = Gs_Embedding(3, slot_dim, use_fourier=False)
+
+        # self.pos_head = Pos_Decoder(slot_dim, hid_dim)
+        # self.col_head = Col_Decoder(slot_dim, hid_dim)
         # self.mask_head = Gs_Mask_Decoder(slot_dim, hid_dim)
 
-    def forward(self, x) -> torch.Tensor:
+    def forward(self, x, pos) -> torch.Tensor:
 
         # # Shared mlp
         # gs = self.mlp_head(x)
@@ -161,14 +179,16 @@ class Gs_Decoder(nn.Module):
         # mask = F.softmax(mask, dim=1)
 
         # Shared mlp for pos col mask
-        out = self.pcm_head(x)
-        pos, color, mask = torch.split(out, [3,3,1], dim=-1)
+        x_out, y_out, z_out = self.pcm_head(x, pos)
+        pos = torch.cat([x_out[:,:,:,0:1],y_out[:,:,:,0:1],z_out[:,:,:,0:1]], dim=-1)
+        out = x_out[:,:,:,1:5] + y_out[:,:,:,1:5] + z_out[:,:,:,1:5]
+        color, mask = torch.split(out, [3,1], dim=-1)
         mask = F.softmax(mask, dim=1)
 
-        # pos, color = torch.split(x, [self.pos_dim, self.col_dim], dim=-1)
-        # pos = self.pos_head(pos)
-        # color = self.col_head(color)
-        # mask = self.mask_head(x)
+        # x_embed = self.embedding(x, pos)
+        # pos = self.pos_head(x, pos)
+        # color = self.col_head(x_embed)
+        # mask = self.mask_head(x_embed)
 
         return pos, color, mask # (B, N_S, G, 14), (B, N_S, G, 1)
         return gs, mask # (B, N_S, G, 14), (B, N_S, G, 1)
@@ -184,6 +204,32 @@ class Pos_Decoder(nn.Module):
     def forward(self, x) -> torch.Tensor:
         pos = self.mlp_head(x)
         return pos # (B, N_S, G, 3)
+    
+class TriPlane_Decoder(nn.Module):
+    def __init__(self, input_dim, hid_dim, outdim):
+        super(TriPlane_Decoder, self).__init__()
+        self.x_head = nn.Sequential(
+            nn.Linear(input_dim, hid_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hid_dim, outdim)
+        )
+        self.y_head = nn.Sequential(
+            nn.Linear(input_dim, hid_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hid_dim, outdim)
+        )
+        self.z_head = nn.Sequential(
+            nn.Linear(input_dim, hid_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hid_dim, outdim)
+        )
+        self.embedding = TriPlaneEmbedding(input_dim)
+    def forward(self, input, pos) -> torch.Tensor:
+        xy, yz, zx = self.embedding(pos)
+        x = self.x_head(input+yz)
+        y = self.y_head(input+zx)
+        z = self.z_head(input+xy)
+        return x, y, z
     
 class Col_Decoder(nn.Module):
     def __init__(self, input_dim, hid_dim):
@@ -230,28 +276,25 @@ class SlotAttentionAutoEncoder(nn.Module):
         #                                 data_cfg.use_color,
         #                                 data_cfg.use_motion], dtype=torch.bool)
         gs_dim = 14
-        slot_dim = 128
+        slot_dim = 96
 
         self.encoder = nn.Linear(gs_dim, slot_dim)
-        self.encode_embedding = Gs_Embedding(3, slot_dim, use_fourier=False)
-        slot_dim = self.encode_embedding.out_dim
+        # self.encode_embedding = Gs_Embedding(3, slot_dim, use_fourier=False)
+        # slot_dim = self.encode_embedding.out_dim
         # self.encode_norm = nn.LayerNorm(slot_dim)
-        print("Slot dim after encode + embed: ", slot_dim)
         
         self.slot_attention = SlotAttention(
             num_slots=self.num_slots,
             slot_dim=slot_dim,
             iters=self.num_iters,
             eps = 1e-8, 
-            hidden_dim = 192)
-
-        self.decode_embedding = Gs_Embedding(3, slot_dim, use_fourier=False)
-        print("Slot dim after slot attn + embed: ", self.decode_embedding.out_dim)
-        self.decoder = Gs_Decoder(self.decode_embedding.out_dim, 128)
+            hidden_dim = 128)
+        
+        self.decoder = Gs_Decoder(slot_dim, 96)
         
         self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
 
-    def forward(self, gs:torch.Tensor, pos:torch.Tensor, Ks:torch.Tensor, w2cs:torch.Tensor, mask=None, inference=False):
+    def forward(self, gs:torch.Tensor, pe:torch.Tensor, Ks:torch.Tensor, w2cs:torch.Tensor, mask=None, inference=False):
         """
         gs: [B, G, D]
         pos: [B, G, 3]
@@ -259,12 +302,10 @@ class SlotAttentionAutoEncoder(nn.Module):
         """
         _,G,_ = gs.shape
 
-        gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, D]
-
         # Gs encoder to match slot dim
         # gs = torch.cat([gs[:,:,0:3],gs[:,:,11:14]], dim=-1) # [B, G, 6]
         x = self.encoder(gs)
-        x = self.encode_embedding(x, pos) # [B, N_S, G, D]
+        # x = self.encode_embedding(x, pos) # [B, N_S, G, D]
         # x = self.encode_norm(x) # [B, N_S, G, D]
 
         # x = gs
@@ -273,19 +314,16 @@ class SlotAttentionAutoEncoder(nn.Module):
         slots = self.slot_attention(x, mask) # [B, N_S, D]
 
         # Broadcast pos to all slots
-        pos = pos.unsqueeze(1)
-        pos = pos.repeat(1,self.num_slots,1,1) # [B, N_S, G, 3]
+        pe = pe.unsqueeze(1)
+        pe = pe.repeat(1,self.num_slots,1,1) # [B, N_S, G, 3]
 
         # Broadcast slots to all points
         slots = slots.unsqueeze(-2) # [B, N_S, D]
         slots = slots.repeat(1,1,G,1) # [B, N_S, G, D]
 
-        # Shared embedding
-        slots = self.decode_embedding(slots, pos) # [B, N_S, G, D]
-
         # MLP detection head for color and mask
         # gs_slot, gs_mask = self.decoder(slots)
-        pos, color, gs_mask = self.decoder(slots)
+        pos, color, gs_mask = self.decoder(slots, pe)
         
         # Copy gs to match slots count
         gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, D]
@@ -304,6 +342,12 @@ class SlotAttentionAutoEncoder(nn.Module):
         color_code = None
 
         if inference:
+            gs_out = gs_out.detach()
+            gs_slot = gs_slot.detach()
+            gs_mask = gs_mask.detach()
+            Ks = Ks.detach()
+            w2cs = w2cs.detach()
+
             gs_slot = torch.cat([gs_slot, gs_mask, gs_mask, gs_mask], dim=-1) # [B, N_S, G, D+3]
 
             for batch,ks,w2c in zip(gs_out,Ks,w2cs):
@@ -321,7 +365,7 @@ class SlotAttentionAutoEncoder(nn.Module):
             slots_alpha = torch.stack(slots_alpha,dim=0)[:,:,:,0:1]
             recon_slots = torch.cat([recon_slots, slots_alpha], dim=-1)
 
-            color_code = torch.ones_like(recon_combined)
+            color_code = torch.ones_like(recon_combined).detach()
         
         loss = 0
 
