@@ -14,7 +14,14 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 
-
+class Normalize(nn.Module):
+    def __init__(self, dim=-1, p=2):
+        super(Normalize, self).__init__()
+        self.dim = dim
+        self.p = p
+    
+    def forward(self, x):
+        return F.normalize(x, dim=self.dim, p=self.p)
 
 class ShapeOfMotion(Dataset):
     def __init__(self, data_dir, data_cfg, transform=None):        
@@ -32,11 +39,11 @@ class ShapeOfMotion(Dataset):
                              data_cfg.use_opacity,
                              data_cfg.use_color,
                              data_cfg.use_motion]
-        self.quat_activation = lambda x: F.normalize(x, dim=-1, p=2)
+        self.quat_activation = Normalize(dim=-1, p=2)
         self.color_activation = torch.sigmoid
         self.scale_activation = torch.exp
         self.opacity_activation = torch.sigmoid
-        self.motion_coef_activation = lambda x: F.softmax(x, dim=-1)
+        self.motion_coef_activation = nn.Softmax(dim=-1)
 
     @property
     def num_frames(self) -> int:

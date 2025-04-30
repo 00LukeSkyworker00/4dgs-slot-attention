@@ -1,6 +1,6 @@
 #!/bin/bash
 
-NAME=movi_a_test_04_28_pos_col_encode_decode_4
+NAME=movi_a_test_04_30_pos_col_encode_decode_norm_embed_2
 DATA_DIR=/home/skyworker/result/4DGS_SlotAttention/shape_of_motion
 OUT_DIR=/home/skyworker/result/4DGS_SlotAttention/slot_4dgs
 

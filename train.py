@@ -59,7 +59,8 @@ def Trainer(rank, world_size, cfg):
     # model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     # Loss function
-    criterion = nn.MSELoss()
+    l1_loss = nn.L1Loss()
+    mse_loss = nn.MSELoss()
 
     # Define optimizer
     params = [{'params': model.parameters()}]
@@ -81,7 +82,7 @@ def Trainer(rank, world_size, cfg):
     train_sampler = DistributedSampler(train_set, num_replicas=world_size, rank=rank,
         shuffle=True, seed=cfg.training.seed)
     train_dataloader = torch.utils.data.DataLoader(
-        train_set, batch_size=cfg.training.batch_size, num_workers=cfg.training.num_workers,
+        train_set, batch_size=cfg.training.batch_size, num_workers=0,
         sampler=train_sampler, collate_fn=collate_fn_padd
         )
     
@@ -104,6 +105,11 @@ def Trainer(rank, world_size, cfg):
             start = time.time()            
             model.train()
             total_loss = 0
+            p_loss = 0
+            r_loss = 0
+            s_loss = 0
+            o_loss = 0
+            c_loss = 0
 
             for sample in tqdm(train_dataloader):
                 i += 1
@@ -135,12 +141,36 @@ def Trainer(rank, world_size, cfg):
                 _, _, _, gs_recon, _, loss = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
 
                 # Loss calculation
-                # loss += criterion(gs_recon, gs)
+
+                # loss += mse_loss(gs_recon, gs)
                 
-                pos_loss = criterion(gs_recon[:,:,:3], gs[:,:,:3])
-                color_loss = criterion(gs_recon[:,:,11:14], gs[:,:,11:14])
+                # if epoch > 50:
+                #     pos_loss = mse_loss(gs_recon[:,:,:3], gs[:,:,:3])
+                #     p_loss += pos_loss.item()
+                # else:
+                #     pos_loss = 0
+                #     p_loss = 0
+
+
+                pos_loss = mse_loss(gs_recon[:,:,:3], gs[:,:,:3])
+                color_loss = mse_loss(gs_recon[:,:,11:14], gs[:,:,11:14])
+
+                # rots_loss = mse_loss(gs_recon[:,:,3:7], gs[:,:,3:7])
+                # scales_loss = mse_loss(gs_recon[:,:,7:10], gs[:,:,7:10])
+                # opacities_loss = mse_loss(gs_recon[:,:,10:11], gs[:,:,10:11])
+
+
                 loss += pos_loss + color_loss
-                total_loss += loss.item()     
+                # loss += pos_loss * 0.9 + rots_loss + scales_loss * 80 + opacities_loss + color_loss * 12
+
+                total_loss += loss.item()
+
+                p_loss += pos_loss.item()
+                c_loss += color_loss.item()
+
+                # r_loss += rots_loss.item()
+                # s_loss += scales_loss.item()
+                # o_loss += opacities_loss.item()
 
                 optimizer.zero_grad()
                 loss.backward()                
@@ -149,12 +179,25 @@ def Trainer(rank, world_size, cfg):
                 del gs_recon, loss
 
             total_loss /= len(train_dataloader)
+            p_loss /= len(train_dataloader)
+            c_loss /= len(train_dataloader)
+
+            # r_loss /= len(train_dataloader)
+            # s_loss /= len(train_dataloader)
+            # o_loss /= len(train_dataloader)
 
             if rank == 0:   # Print and save only from rank 0
                 print ("Epoch: {}, Loss: {}, Time: {}".format(epoch, total_loss,
                     datetime.timedelta(seconds=time.time() - start)))
             
-                writer.add_scalar('Loss/train', total_loss, epoch)
+                writer.add_scalars('Loss', {
+                    'total': total_loss,
+                    'position': p_loss,
+                    'color': c_loss,
+                    # 'rotation': r_loss,
+                    # 'scale': s_loss,
+                    # 'opacity': o_loss,
+                }, epoch)
 
                 if not epoch % cfg.output.save_interval:                    
                     (
