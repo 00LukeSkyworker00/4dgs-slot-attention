@@ -14,7 +14,14 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 
-
+class Normalize(nn.Module):
+    def __init__(self, dim=-1, p=2):
+        super(Normalize, self).__init__()
+        self.dim = dim
+        self.p = p
+    
+    def forward(self, x):
+        return F.normalize(x, dim=self.dim, p=self.p)
 
 class ShapeOfMotion(Dataset):
     def __init__(self, data_dir, data_cfg, transform=None):        
@@ -32,11 +39,11 @@ class ShapeOfMotion(Dataset):
                              data_cfg.use_opacity,
                              data_cfg.use_color,
                              data_cfg.use_motion]
-        self.quat_activation = lambda x: F.normalize(x, dim=-1, p=2)
+        self.quat_activation = Normalize(dim=-1, p=2)
         self.color_activation = torch.sigmoid
         self.scale_activation = torch.exp
         self.opacity_activation = torch.sigmoid
-        self.motion_coef_activation = lambda x: F.softmax(x, dim=-1)
+        self.motion_coef_activation = nn.Softmax(dim=-1)
 
     @property
     def num_frames(self) -> int:
@@ -153,12 +160,9 @@ class ShapeOfMotion(Dataset):
 
 def collate_fn_padd(batch):
     
-    gt_imgs = [torch.tensor(t['gt_imgs'], dtype=torch.float32) for t in batch]
-    gt_imgs = torch.stack(gt_imgs)
-    Ks = [torch.tensor(t['Ks'], dtype=torch.float32) for t in batch]
-    Ks = torch.stack(Ks)
-    w2cs = [torch.tensor(t['w2cs'], dtype=torch.float32) for t in batch]
-    w2cs = torch.stack(w2cs)
+    gt_imgs = torch.stack([t['gt_imgs'] for t in batch])
+    Ks = torch.stack([t['Ks'] for t in batch])
+    w2cs = torch.stack([t['w2cs'] for t in batch])
 
     # Extract all_gs
     all_gs = []

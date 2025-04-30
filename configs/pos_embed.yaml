@@ -1,8 +1,12 @@
 
 dataset:
   dir: ./data
-  start_idx: 0
-  end_idx: 50
+  train_idx:
+  - 0
+  - 50
+  val_idx:
+  - 51
+  - 60
   resolution:
   - 128
   - 128
