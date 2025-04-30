@@ -24,7 +24,7 @@ class Normalize(nn.Module):
         return F.normalize(x, dim=self.dim, p=self.p)
 
 class ShapeOfMotion(Dataset):
-    def __init__(self, data_dir, data_cfg, transform=None):        
+    def __init__(self, data_dir, data_cfg, transform=None):
         self.data_dir = data_dir
         self.ckpt = torch.load(f"{data_dir}/checkpoints/last.ckpt") # If RAM OOM, could try dynamic load.
         self.img_dir = f"{data_dir}/images/"
@@ -44,13 +44,10 @@ class ShapeOfMotion(Dataset):
         self.scale_activation = torch.exp
         self.opacity_activation = torch.sigmoid
         self.motion_coef_activation = nn.Softmax(dim=-1)
-
-    @property
-    def num_frames(self) -> int:
-        return len(self.frame_names)
+        self.num_frame = len(self.frame_names)
 
     def __len__(self):
-        return len(self.frame_names)
+        return 1
     
     def get_image(self, index) -> torch.Tensor:
         if self.imgs[index] is None:
@@ -58,11 +55,13 @@ class ShapeOfMotion(Dataset):
         img = cast(torch.Tensor, self.imgs[index])
         return img
         
-    def get_fg_3dgs(self, ts: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_fg_4dgs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         means, quats, scales, opacities, colors = self.load_3dgs('fg')
 
-        if ts is not None:
-            transfms = self.get_transforms(ts)  # (G, B, 3, 4)
+        means_4d = []
+        quats_4d = []
+        for ts in range(self.num_frame):
+            transfms = self.get_transforms(torch.tensor([ts]))  # (G, B, 3, 4)
             means_ts = torch.einsum(
                 "pnij,pj->pni",
                 transfms,
@@ -77,17 +76,21 @@ class ShapeOfMotion(Dataset):
                 )
             )
             quats_ts = F.normalize(quats_ts, p=2, dim=-1) # (G, B, 4)
-            means_ts = means_ts[:, 0]
-            quats_ts = quats_ts[:, 0]
-        else:
-            means_ts = means
-            quats_ts = quats
+            
+            means_4d.append(means_ts[:, 0])
+            quats_4d.append(quats_ts[:, 0])
+
+        means = torch.cat(means_4d, dim=-1)
+        quats = torch.cat(quats_4d, dim=-1)
          
-        return means_ts, quats_ts, scales, opacities, colors
+        return means, quats, scales, opacities, colors
     
-    def get_all_3dgs(self, ts: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        bg_gs = self.load_3dgs('bg')
-        fg_gs = self.get_fg_3dgs(ts)
+    def get_all_4dgs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        means,quats,scales,opacities,color = self.load_3dgs('bg')
+        means = means.repeat(1,self.num_frame)
+        quats = quats.repeat(1,self.num_frame)
+        bg_gs = means,quats,scales,opacities,color
+        fg_gs = self.get_fg_4dgs()
         return tuple(torch.cat([a, b]) for a, b in zip(bg_gs, fg_gs))
 
     def get_transforms(self, ts: torch.Tensor| None = None) -> torch.Tensor:
@@ -123,12 +126,6 @@ class ShapeOfMotion(Dataset):
         colors = torch.nan_to_num(colors, nan=1e-6)
 
         return means, quats, scales, opacities, colors
-    
-    def load_3dgs_norm(self, set='fg') -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        norm_3dgs = []
-        for tensor in self.load_3dgs(set):
-            norm_3dgs.append(self.min_max_norm(tensor))
-        return tuple(norm_3dgs)
 
     def load_motion_base(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         transls = self.ckpt["model"]["motion_bases.params.transls"]
@@ -137,18 +134,13 @@ class ShapeOfMotion(Dataset):
         coefs = self.motion_coef_activation(coefs)
         return transls, rots, coefs
     
-    # def min_max_norm(self, tensor: torch.Tensor) -> torch.Tensor:
-    #     min_val = tensor.min()
-    #     max_val = tensor.max()
-    #     return (tensor - min_val) / (max_val - min_val + 1e-8)  # Avoid division by zero
-    
     def __getitem__(self, index: int):
-        all_gs = self.get_all_3dgs(torch.tensor([index]))
+        all_gs = self.get_all_4dgs()
         Ks = self.ckpt["model"]["Ks"][index].float()
         w2cs = self.ckpt["model"]["w2cs"][index]
         data = {
             # "gt_imgs": self.get_image(index),
-            "gt_imgs": self.renderer.rasterize_gs(all_gs[0], all_gs[1], all_gs[2], all_gs[3], all_gs[4], Ks, w2cs),
+            "gt_imgs": self.renderer.rasterize_gs(all_gs[0][:,0:3], all_gs[1][:,0:4], all_gs[-3], all_gs[-2], all_gs[-1], Ks, w2cs),
             # "fg_gs": self.get_fg_3dgs(torch.tensor([index])),
             "all_gs": all_gs,
             "feature_mask": self.feature_mask,

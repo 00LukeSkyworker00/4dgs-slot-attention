@@ -133,7 +133,8 @@ def Trainer(rank, world_size, cfg):
                 gs = sample['all_gs'].to(device)
                 mask = sample['all_mask'].to(device)
                 pos_embed = sample['all_gs_pos'].to(device)
-                
+                print(pos_embed.shape)
+                exit()
                 Ks = sample['Ks']
                 w2cs = sample['w2cs']
 
