@@ -31,7 +31,8 @@ class ShapeOfMotion(Dataset):
         self.img_ext = os.path.splitext(os.listdir(self.img_dir)[0])[1]
         self.frame_names = [os.path.splitext(p)[0] for p in sorted(os.listdir(self.img_dir))]
         self.imgs: list[torch.Tensor | None] = [None for _ in self.frame_names]
-        self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=False)
+        self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
+        self.transform = transform
         self.quat_activation = Normalize(dim=-1, p=2)
         self.color_activation = torch.sigmoid
         self.scale_activation = torch.exp
@@ -133,10 +134,9 @@ class ShapeOfMotion(Dataset):
         w2cs: torch.Tensor = self.ckpt["model"]["w2cs"][index]
         data = {
             # "gt_imgs": self.get_image(index),
-            "gt_imgs": self.renderer.rasterize_gs(all_gs[0][:,0:3], all_gs[1][:,0:4], all_gs[-3], all_gs[-2], all_gs[-1], Ks, w2cs),
+            "gt_imgs": self.renderer.rasterize_gs(gs[0][:,0:3], gs[1][:,0:4], gs[-3], gs[-2], gs[-1], Ks, w2cs),
             # "fg_gs": self.get_fg_3dgs(torch.tensor([index])),
-            "all_gs": all_gs,
-            "feature_mask": self.feature_mask,
+            "gs": gs,
             "Ks": Ks,
             "w2cs": w2cs
         }
