@@ -49,7 +49,7 @@ def Trainer(rank, world_size, cfg):
     train_set = ConcatDataset(train_list)
     print(f"Number of scene in concat dataset: {len(train_set)}")
 
-    # model = SlotAttentionAutoEncoder(resolution, opt.num_slots, opt.num_iters, train_set[0]['all_gs'].size(-1))
+    # model = SlotAttentionAutoEncoder(resolution, opt.num_slots, opt.num_iters, train_set[0]['gs'].size(-1))
     model = SlotAttentionAutoEncoder(cfg.dataset, cfg.cnn, cfg.attention)
     # model.load_state_dict(torch.load('./tmp/model6.ckpt')['model_state_dict'])
     model = model.to(device)
@@ -93,8 +93,8 @@ def Trainer(rank, world_size, cfg):
         val_set = train_set[0]
         val_gt = val_set['gt_imgs']
         val_gt = val_gt.permute(2,0,1)
-        val_gs = torch.cat(val_set['all_gs'], dim=-1).to(device).unsqueeze(0)
-        val_pos_embed = val_set['all_gs'][0].to(device).unsqueeze(0)
+        val_gs = torch.cat(val_set['gs'], dim=-1).to(device).unsqueeze(0)
+        val_pos_embed = val_set['gs'][0].to(device).unsqueeze(0)
         val_Ks = val_set['Ks'].unsqueeze(0)
         val_w2cs = val_set['w2cs'].unsqueeze(0)
         save_env(cfg)
@@ -130,15 +130,15 @@ def Trainer(rank, world_size, cfg):
 
                 # Get inputs and lengths
                 # gt_imgs = sample['gt_imgs'].to(device)
-                gs = sample['all_gs'].to(device)
-                mask = sample['all_mask'].to(device)
-                pos_embed = sample['all_gs_pos'].to(device)
+                gs = sample['gs'].to(device)
+                pad_mask = sample['mask'].to(device)
+                pe = sample['pe'].to(device)
                 
                 Ks = sample['Ks']
                 w2cs = sample['w2cs']
 
                 # Forward pass through model
-                _, _, _, gs_recon, _, loss = model(gs, pos_embed, Ks=Ks, w2cs= w2cs, mask=mask)
+                _, _, _, gs_recon, _, loss = model(gs, pe, Ks=Ks, w2cs= w2cs, pad_mask=pad_mask)
 
                 # Loss calculation
 
@@ -152,8 +152,8 @@ def Trainer(rank, world_size, cfg):
                 #     p_loss = 0
 
 
-                pos_loss = mse_loss(gs_recon[:,:,:3], gs[:,:,:3])
-                color_loss = mse_loss(gs_recon[:,:,11:14], gs[:,:,11:14])
+                pos_loss = mse_loss(gs_recon[:,:,:3], gs[:,:,:3]) * pad_mask
+                color_loss = mse_loss(gs_recon[:,:,11:14], gs[:,:,11:14]) * pad_mask
 
                 # rots_loss = mse_loss(gs_recon[:,:,3:7], gs[:,:,3:7])
                 # scales_loss = mse_loss(gs_recon[:,:,7:10], gs[:,:,7:10])

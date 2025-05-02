@@ -85,7 +85,7 @@ class ShapeOfMotion(Dataset):
          
         return means_ts, quats_ts, scales, opacities, colors
     
-    def get_all_3dgs(self, ts: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_3dgs(self, ts: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         bg_gs = self.load_3dgs('bg')
         fg_gs = self.get_fg_3dgs(ts)
         return tuple(torch.cat([a, b]) for a, b in zip(bg_gs, fg_gs))
@@ -143,14 +143,14 @@ class ShapeOfMotion(Dataset):
     #     return (tensor - min_val) / (max_val - min_val + 1e-8)  # Avoid division by zero
     
     def __getitem__(self, index: int):
-        all_gs = self.get_all_3dgs(torch.tensor([index]))
+        gs = self.get_3dgs(torch.tensor([index]))
         Ks = self.ckpt["model"]["Ks"][index].float()
         w2cs = self.ckpt["model"]["w2cs"][index]
         data = {
             # "gt_imgs": self.get_image(index),
-            "gt_imgs": self.renderer.rasterize_gs(all_gs[0], all_gs[1], all_gs[2], all_gs[3], all_gs[4], Ks, w2cs),
+            "gt_imgs": self.renderer.rasterize_gs(gs[0], gs[1], gs[2], gs[3], gs[4], Ks, w2cs),
             # "fg_gs": self.get_fg_3dgs(torch.tensor([index])),
-            "all_gs": all_gs,
+            "gs": gs,
             "feature_mask": self.feature_mask,
             "Ks": Ks,
             "w2cs": w2cs
@@ -164,33 +164,33 @@ def collate_fn_padd(batch):
     Ks = torch.stack([t['Ks'] for t in batch])
     w2cs = torch.stack([t['w2cs'] for t in batch])
 
-    # Extract all_gs
-    all_gs = []
-    all_gs_pos = []
-    all_mask = []
+    # Extract gs
+    gs = []
+    pe = []
+    mask = []
     for t in batch:
-        selected = [k for k, m in zip(t['all_gs'], t['feature_mask']) if m]
+        selected = [k for k, m in zip(t['gs'], t['feature_mask']) if m]
         gs = torch.cat(selected, dim=-1)
-        all_gs.append(gs)
-        all_gs_pos.append(t['all_gs'][0])
-        all_mask.append(torch.ones_like(gs, dtype=torch.float32))
+        gs.append(gs)
+        pe.append(t['gs'][0])
+        mask.append(torch.ones_like(gs, dtype=torch.float32))
 
     # Pad sequences along the first dimension (G)
     # batch_fg = torch.nn.utils.rnn.pad_sequence(fg_gs, batch_first=True, padding_value=0.0)
-    all_gs = torch.nn.utils.rnn.pad_sequence(all_gs, batch_first=True, padding_value=0.0)
-    all_gs_pos = torch.nn.utils.rnn.pad_sequence(all_gs_pos, batch_first=True, padding_value=0.0)
+    gs = torch.nn.utils.rnn.pad_sequence(gs, batch_first=True, padding_value=0.0)
+    pe = torch.nn.utils.rnn.pad_sequence(pe, batch_first=True, padding_value=0.0)
 
     # # # Compute mask (True for valid values, False for padding)
     # fg_mask = (batch_fg != 0).any(dim=-1)
-    all_mask = torch.nn.utils.rnn.pad_sequence(all_mask, batch_first=True, padding_value=0.0)
-    all_mask = all_mask.any(dim=-1)
+    mask = torch.nn.utils.rnn.pad_sequence(mask, batch_first=True, padding_value=0.0)
+    mask = mask.any(dim=-1)
 
     out = {
         "gt_imgs": gt_imgs,
         # "fg_gs": batch_fg,
-        "all_gs": all_gs,
-        "all_mask": all_mask,
-        "all_gs_pos": all_gs_pos,
+        "gs": gs,
+        "mask": mask,
+        "pe": pe,
         "Ks": Ks,
         "w2cs": w2cs,
     }
