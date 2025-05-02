@@ -29,16 +29,13 @@ class SlotAttention(nn.Module):
         self.norm_slots  = nn.LayerNorm(slot_dim)
         self.norm_pre_ff = nn.LayerNorm(slot_dim)
 
-    def forward(self, inputs, mask, num_slots = None):        
-        b, n, d = inputs.shape
+    def forward(self, inputs, num_slots = None): 
+        b, _, d = inputs.shape
         n_s = num_slots if num_slots is not None else self.num_slots
         
         mu = self.slots_mu.expand(b, n_s, -1)
         sigma = self.slots_sigma.expand(b, n_s, -1)
         slots = torch.normal(mu, sigma)
-
-        if mask is not None:
-            mask = mask.unsqueeze(-1)
 
         inputs = self.norm_input(inputs)
         k, v = self.to_k(inputs), self.to_v(inputs)
@@ -51,9 +48,6 @@ class SlotAttention(nn.Module):
 
             dots = torch.einsum('bid,bjd->bij', k, q) * self.scale
             attn = dots.softmax(dim=-1) + self.eps
-            
-            if mask is not None:
-                attn = attn.masked_fill(mask == 0, 0)
 
             attn = attn / attn.sum(dim=-2, keepdim=True)
             updates = torch.einsum('bij,bid->bjd', attn, v)
@@ -176,14 +170,12 @@ class Gs_Decoder(nn.Module):
         # # Shared mlp
         # gs = self.mlp_head(x)
         # gs, mask = torch.split(gs, [14,1], dim=-1)
-        # mask = F.softmax(mask, dim=1)
 
         # Shared mlp for pos col mask
         x_out, y_out, z_out = self.pcm_head(x, pos)
         pos = torch.cat([x_out[:,:,:,0:1],y_out[:,:,:,0:1],z_out[:,:,:,0:1]], dim=-1)
         out = x_out[:,:,:,1:5] + y_out[:,:,:,1:5] + z_out[:,:,:,1:5]
         color, mask = torch.split(out, [3,1], dim=-1)
-        mask = F.softmax(mask, dim=1)
 
         # x_embed = self.embedding(x, pos)
         # pos = self.pos_head(x, pos)
@@ -254,8 +246,7 @@ class Gs_Mask_Decoder(nn.Module):
 
     def forward(self, x) -> torch.Tensor:
         mask = self.mask_head(x)
-        mask = F.softmax(mask, dim=1)
-        return mask # (B, N_S, G, 1)        
+        return mask # (B, N_S, G, 1)
 
 class SlotAttentionAutoEncoder(nn.Module):
     # def __init__(self, resolution, num_slots, num_iters, hid_dim):
@@ -294,7 +285,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         
         self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
 
-    def forward(self, gs:torch.Tensor, pe:torch.Tensor, Ks:torch.Tensor, w2cs:torch.Tensor, mask=None, inference=False):
+    def forward(self, gs:torch.Tensor, pe:torch.Tensor, Ks:torch.Tensor, w2cs:torch.Tensor, pad_mask=None, inference=False):
         """
         gs: [B, G, D]
         pos: [B, G, 3]
@@ -310,21 +301,26 @@ class SlotAttentionAutoEncoder(nn.Module):
 
         # x = gs
 
+        x = self.apply_mask(x, pad_mask, 0)
+
         # Slot Attention module.
-        slots = self.slot_attention(x, mask) # [B, N_S, D]
+        slots = self.slot_attention(x) # [B, N_S, D]
 
         # Broadcast pos to all slots
         pe = pe.unsqueeze(1)
         pe = pe.repeat(1,self.num_slots,1,1) # [B, N_S, G, 3]
 
         # Broadcast slots to all points
-        slots = slots.unsqueeze(-2) # [B, N_S, D]
+        slots = slots.unsqueeze(-2) # [B, N_S, 1, D]
         slots = slots.repeat(1,1,G,1) # [B, N_S, G, D]
 
         # MLP detection head for color and mask
         # gs_slot, gs_mask = self.decoder(slots)
-        pos, color, gs_mask = self.decoder(slots, pe)
+        pos, color, gs_mask = self.decoder(slots, pe) # [B, N_S, G, D]
         
+        gs_mask = self.apply_mask(gs_mask,pad_mask.unsqueeze(1), -torch.inf)        
+        gs_mask = F.softmax(gs_mask, dim=1)
+
         # Copy gs to match slots count
         gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, D]
         # Inject decoded gs into gs_slot
@@ -370,3 +366,16 @@ class SlotAttentionAutoEncoder(nn.Module):
         loss = 0
 
         return recon_combined, recon_slots, color_code, gs_out, gs_slot, loss
+    
+    def apply_mask(self, input: torch.Tensor, mask: torch.Tensor, pad_value: int):
+        """
+        input: [B,G,D]
+        mask: [B,G,1]
+        """
+        if mask == None:
+            return input
+        
+        assert mask.shape[-1] == 1
+
+        out = input.masked_fill(mask==0, pad_value)
+        return out
