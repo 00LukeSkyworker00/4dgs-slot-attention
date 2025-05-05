@@ -10,7 +10,6 @@ from transforms import *
 from renderer import *
 
 import torch
-# from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 
@@ -27,18 +26,12 @@ class ShapeOfMotion(Dataset):
     def __init__(self, data_dir, data_cfg, transform=None):        
         self.data_dir = data_dir
         self.ckpt = torch.load(f"{data_dir}/checkpoints/last.ckpt") # If RAM OOM, could try dynamic load.
+        self.ano = np.load(f"{data_dir}/ground_truth.npz")['ano']
         self.img_dir = f"{data_dir}/images/"
         self.img_ext = os.path.splitext(os.listdir(self.img_dir)[0])[1]
         self.frame_names = [os.path.splitext(p)[0] for p in sorted(os.listdir(self.img_dir))]
         self.imgs: list[torch.Tensor | None] = [None for _ in self.frame_names]
         self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
-        self.transform = transform
-        self.feature_mask = [data_cfg.use_xyz,
-                             data_cfg.use_rots,
-                             data_cfg.use_scale,
-                             data_cfg.use_opacity,
-                             data_cfg.use_color,
-                             data_cfg.use_motion]
         self.quat_activation = Normalize(dim=-1, p=2)
         self.color_activation = torch.sigmoid
         self.scale_activation = torch.exp
@@ -136,12 +129,7 @@ class ShapeOfMotion(Dataset):
         coefs = self.ckpt["model"]["fg.params.motion_coefs"]
         coefs = self.motion_coef_activation(coefs)
         return transls, rots, coefs
-    
-    # def min_max_norm(self, tensor: torch.Tensor) -> torch.Tensor:
-    #     min_val = tensor.min()
-    #     max_val = tensor.max()
-    #     return (tensor - min_val) / (max_val - min_val + 1e-8)  # Avoid division by zero
-    
+        
     def __getitem__(self, index: int):
         gs = self.get_3dgs(torch.tensor([index]))
         Ks = self.ckpt["model"]["Ks"][index].float()
@@ -149,11 +137,10 @@ class ShapeOfMotion(Dataset):
         data = {
             # "gt_imgs": self.get_image(index),
             "gt_imgs": self.renderer.rasterize_gs(gs[0], gs[1], gs[2], gs[3], gs[4], Ks, w2cs),
-            # "fg_gs": self.get_fg_3dgs(torch.tensor([index])),
             "gs": gs,
-            "feature_mask": self.feature_mask,
             "Ks": Ks,
-            "w2cs": w2cs
+            "w2cs": w2cs,
+            "ano": torch.from_numpy(self.ano[index]).float()
         }
         return data
     
@@ -163,35 +150,33 @@ def collate_fn_padd(batch):
     gt_imgs = torch.stack([t['gt_imgs'] for t in batch])
     Ks = torch.stack([t['Ks'] for t in batch])
     w2cs = torch.stack([t['w2cs'] for t in batch])
+    ano = torch.stack([t['ano'] for t in batch])
 
     # Extract gs
     gs = []
     pe = []
     mask = []
     for t in batch:
-        selected = [k for k, m in zip(t['gs'], t['feature_mask']) if m]
-        gs = torch.cat(selected, dim=-1)
-        gs.append(gs)
+        gs_comibine = torch.cat([k for k in t['gs']], dim=-1)
+        gs.append(gs_comibine)
         pe.append(t['gs'][0])
-        mask.append(torch.ones_like(gs, dtype=torch.float32))
+        mask.append(torch.ones_like(gs_comibine, dtype=torch.float32))
 
     # Pad sequences along the first dimension (G)
-    # batch_fg = torch.nn.utils.rnn.pad_sequence(fg_gs, batch_first=True, padding_value=0.0)
     gs = torch.nn.utils.rnn.pad_sequence(gs, batch_first=True, padding_value=0.0)
     pe = torch.nn.utils.rnn.pad_sequence(pe, batch_first=True, padding_value=0.0)
 
-    # # # Compute mask (True for valid values, False for padding)
-    # fg_mask = (batch_fg != 0).any(dim=-1)
+    # Compute mask (True for valid values, False for padding)
     mask = torch.nn.utils.rnn.pad_sequence(mask, batch_first=True, padding_value=0.0)
     mask = mask.any(dim=-1)
 
     out = {
         "gt_imgs": gt_imgs,
-        # "fg_gs": batch_fg,
         "gs": gs,
         "mask": mask,
         "pe": pe,
         "Ks": Ks,
         "w2cs": w2cs,
+        "ano": ano,
     }
     return out
