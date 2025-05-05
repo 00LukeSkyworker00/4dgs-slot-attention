@@ -3,10 +3,10 @@ dataset:
   dir: ./data
   train_idx:
   - 0
-  - 50
+  - 180
   val_idx:
-  - 51
-  - 60
+  - 181
+  - 200
   resolution:
   - 128
   - 128

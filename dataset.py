@@ -10,7 +10,6 @@ from transforms import *
 from renderer import *
 
 import torch
-# from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 
@@ -27,12 +26,12 @@ class ShapeOfMotion(Dataset):
     def __init__(self, data_dir, data_cfg, transform=None):
         self.data_dir = data_dir
         self.ckpt = torch.load(f"{data_dir}/checkpoints/last.ckpt") # If RAM OOM, could try dynamic load.
+        self.ano = np.load(f"{data_dir}/ground_truth.npz")['ano']
         self.img_dir = f"{data_dir}/images/"
         self.img_ext = os.path.splitext(os.listdir(self.img_dir)[0])[1]
         self.frame_names = [os.path.splitext(p)[0] for p in sorted(os.listdir(self.img_dir))]
         self.imgs: list[torch.Tensor | None] = [None for _ in self.frame_names]
         self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
-        self.transform = transform
         self.quat_activation = Normalize(dim=-1, p=2)
         self.color_activation = torch.sigmoid
         self.scale_activation = torch.exp
@@ -134,11 +133,11 @@ class ShapeOfMotion(Dataset):
         w2cs = self.ckpt["model"]["w2cs"][index]
         data = {
             # "gt_imgs": self.get_image(index),
-            "gt_imgs": self.renderer.rasterize_gs(gs[0][:,0:3], gs[1][:,0:4], gs[-3], gs[-2], gs[-1], Ks, w2cs),
-            # "fg_gs": self.get_fg_3dgs(torch.tensor([index])),
+            "gt_imgs": self.renderer.rasterize_gs(gs[0], gs[1], gs[2], gs[3], gs[4], Ks, w2cs),
             "gs": gs,
             "Ks": Ks,
-            "w2cs": w2cs
+            "w2cs": w2cs,
+            "ano": torch.from_numpy(self.ano[index]).float()
         }
         return data
     
@@ -147,6 +146,7 @@ def collate_fn_padd(batch):
     gt_imgs = torch.stack([t['gt_imgs'] for t in batch])
     Ks = torch.stack([t['Ks'] for t in batch])
     w2cs = torch.stack([t['w2cs'] for t in batch])
+    ano = torch.stack([t['ano'] for t in batch])
 
     # Extract all_gs
     gs = [t['gs'] for t in batch]
@@ -169,5 +169,6 @@ def collate_fn_padd(batch):
         "mask": mask,
         "Ks": Ks,
         "w2cs": w2cs,
+        "ano": ano,
     }
     return out
