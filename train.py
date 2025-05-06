@@ -2,15 +2,16 @@ import os
 import shutil
 import glob
 import argparse
+import subprocess
 
 from dataset import *
-from model import *
+from utils import *
+from model import SlotAttentionAutoEncoder
 from tqdm import tqdm
 import time
 import datetime
 import torch.optim as optim
 import torch
-import torchvision
 from omegaconf import OmegaConf
 
 import torch.multiprocessing as mp
@@ -18,106 +19,40 @@ from torch.utils.data import ConcatDataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
-from torch.utils.tensorboard import SummaryWriter
 
-class Logger():
-    def __init__(self, test_set, train_len, val_len, cfg, device):
-        self.writer = SummaryWriter(os.path.join(cfg.output.dir, 'logs'))
+def save_env(cfg):
+    # Copy Python scripts to the output directory
+    script_folder = os.path.dirname(os.path.abspath(__file__))
+    python_files = glob.glob(os.path.join(script_folder, '*.py'))
+    for file in python_files:
+        shutil.copy(file, cfg.output.dir)
 
-        self.img = test_set['gt_imgs'].permute(2,0,1)
-        self.gs = torch.cat(test_set['gs'], dim=-1).to(device).unsqueeze(0)
-        self.pe = test_set['gs'][0].to(device).unsqueeze(0)
-        self.Ks = test_set['Ks'].unsqueeze(0)
-        self.w2cs = test_set['w2cs'].unsqueeze(0)
+    # Save the configuration file to the output directory
+    with open(os.path.join(cfg.output.dir, 'config.yaml'), 'w') as f:
+        OmegaConf.save(cfg, f)
 
-        self.renderer = Renderer(tuple(cfg.dataset.resolution), requires_grad=False)
+def PosLoss(loss_fn, gt, pred, pad_mask):
+    gt = gt[...,:3][pad_mask]
+    pred = pred[...,:3][pad_mask]
+    loss = 0
+    for fn in loss_fn:
+        loss += fn(gt,pred)
+    return loss
 
-        self.total_loss = 0
-        self.p_loss = 0
-        self.c_loss = 0
-
-        self.ari = 0
-
-        self.best = float('inf')
-
-        self.train_len = train_len
-        self.val_len = val_len
-
-        self.save_env(cfg)
-
-    def record_loss(self, total_loss:torch.Tensor, p_loss:torch.Tensor, c_loss:torch.Tensor):
-        self.total_loss += total_loss.item()
-        self.p_loss += p_loss.item()
-        self.c_loss += c_loss.item()
-
-    def record_ari(self, gt:torch.Tensor, pred:torch.Tensor):
-        pass
-
-    def plt_loss(self, epoch:int, start_time, mode='Train') -> bool:
-        assert mode in ['Train', 'Val']
-        if mode == 'Train':
-            len = self.train_len
-        else:
-            len = self.val_len            
-
-        self.total_loss /= len
-        self.p_loss /= len
-        self.c_loss /= len
-
-        isBest = False
-        if mode == 'Val' and self.best > self.total_loss:
-            self.best = self.total_loss
-            isBest = True
-
-        self.writer.add_scalars(f'{mode} Loss', {
-            'total': self.total_loss,
-            'position': self.p_loss,
-            'color': self.c_loss,
-        }, epoch)
-
-        print ("{} Loss: {}, Time: {}".format(mode, self.total_loss,
-                    datetime.timedelta(seconds=time.time() - start_time)))
-        
-        self.total_loss = 0
-        self.p_loss = 0
-        self.c_loss = 0
-
-        return isBest
-
-
-
-    def plt_render(self, model, epoch:int):
-        gs_out, gs_slot, gs_mask, _ = model(self.gs, self.pe)
-        recon_combined, recon_slots = render_gs(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
-        
-        recon_combined = recon_combined[0].permute(2,0,1)
-        recon_slots = recon_slots.permute(0,3,1,2)
-
-        result = torchvision.utils.make_grid(torch.stack([self.img,recon_combined],dim=0))
-        self.writer.add_image('result', result, epoch)
-
-        recon_slots = torchvision.utils.make_grid(recon_slots, nrow=5)
-        self.writer.add_image('slots_recon', recon_slots, epoch)
-
-        del recon_combined, recon_slots, gs_out, gs_slot, gs_mask
-
-    def save_env(cfg):
-        # Copy Python scripts to the output directory
-        script_folder = os.path.dirname(os.path.abspath(__file__))
-        python_files = glob.glob(os.path.join(script_folder, '*.py'))
-        for file in python_files:
-            shutil.copy(file, cfg.output.dir)
-
-        # Save the configuration file to the output directory
-        with open(os.path.join(cfg.output.dir, 'config.yaml'), 'w') as f:
-            OmegaConf.save(cfg, f)
+def ColorLoss(loss_fn, gt, pred, pad_mask):
+    gt = gt[...,11:14][pad_mask]
+    pred = pred[...,11:14][pad_mask]
+    loss = 0
+    for fn in loss_fn:
+        loss += fn(gt,pred)
+    return loss
 
 
 def Trainer(rank, world_size, cfg):
 
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12355"
-
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     # Set device for each process
     torch.cuda.set_device(rank)
     device = torch.device(f"cuda:{rank}")
@@ -134,6 +69,7 @@ def Trainer(rank, world_size, cfg):
 
     # Loss function
     mse_loss = nn.MSELoss()
+    l1_loss = nn.L1Loss()
 
     # Define optimizer
     params = [{'params': model.parameters()}]
@@ -143,7 +79,7 @@ def Trainer(rank, world_size, cfg):
     train_list = []    
     for i in range(cfg.dataset.train_idx[0], cfg.dataset.train_idx[1] + 1):
         path = os.path.join(cfg.dataset.dir,f'movi_a_{i:04}_anoMask')
-        if not os.path.exists(path):
+        if not os.path.exists(os.path.join(path,'checkpoints')):
             print(f"Path does not exist: {path}")
             continue
         train_set = ShapeOfMotion(path, cfg.dataset)
@@ -193,6 +129,8 @@ def Trainer(rank, world_size, cfg):
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         print(f"Resume from {start_epoch} epoch!")
+    else:
+        save_env(cfg)
     i = start_epoch * len(train_dataloader)  # Resume step count
     
     start = time.time()
@@ -203,7 +141,6 @@ def Trainer(rank, world_size, cfg):
             """
             Train Loop
             """
-            print('Train model...')
             model.train()
             for sample in tqdm(train_dataloader):
                 i += 1
@@ -228,16 +165,14 @@ def Trainer(rank, world_size, cfg):
                 gs_recon, _, _, loss = model(gs, pe, pad_mask=pad_mask)
 
                 # Loss calculation
-                pos_loss = mse_loss(gs_recon[:,:,:3][pad_mask], gs[:,:,:3][pad_mask])
-                color_loss = mse_loss(gs_recon[:,:,11:14][pad_mask], gs[:,:,11:14][pad_mask])
-                # rots_loss = mse_loss(gs_recon[:,:,3:7], gs[:,:,3:7])
-                # scales_loss = mse_loss(gs_recon[:,:,7:10], gs[:,:,7:10])
-                # opacities_loss = mse_loss(gs_recon[:,:,10:11], gs[:,:,10:11])
+                pos_loss = PosLoss([mse_loss], gs, gs_recon, pad_mask)
+                color_loss = ColorLoss([mse_loss, l1_loss], gs, gs_recon, pad_mask)
 
                 # loss += mse_loss(gs_recon, gs)
                 loss += pos_loss + color_loss
 
-                logger.record_loss(loss,pos_loss,color_loss)
+                if rank == 0:
+                    logger.record_loss(loss,pos_loss,color_loss)
 
                 # Backward pass and optimizer step
                 optimizer.zero_grad()
@@ -267,17 +202,18 @@ def Trainer(rank, world_size, cfg):
                         gs_recon, _, _, loss = model(gs, pe, pad_mask=pad_mask)
 
                         # Loss calculation
-                        pos_loss = mse_loss(gs_recon[:,:,:3][pad_mask], gs[:,:,:3][pad_mask])
-                        color_loss = mse_loss(gs_recon[:,:,11:14][pad_mask], gs[:,:,11:14][pad_mask])
-
-                        # rots_loss = mse_loss(gs_recon[:,:,3:7], gs[:,:,3:7])
-                        # scales_loss = mse_loss(gs_recon[:,:,7:10], gs[:,:,7:10])
-                        # opacities_loss = mse_loss(gs_recon[:,:,10:11], gs[:,:,10:11])
+                        pos_loss = PosLoss([mse_loss], gs, gs_recon, pad_mask)
+                        color_loss = ColorLoss([mse_loss, l1_loss], gs, gs_recon, pad_mask)
+                        # rots_loss = mse_loss(gs_recon[...,3:7], gs[...,3:7])
+                        # scales_loss = mse_loss(gs_recon[...,7:10], gs[...,7:10])
+                        # opacities_loss = mse_loss(gs_recon[...,10:11], gs[...,10:11])
 
                         # loss += mse_loss(gs_recon, gs)
                         loss += pos_loss + color_loss
 
-                        logger.record_loss(loss,pos_loss,color_loss)
+
+                        if rank == 0:
+                            logger.record_loss(loss,pos_loss,color_loss)
 
                         del gs_recon, loss, pos_loss, color_loss
 
@@ -321,24 +257,40 @@ def main():
     parser.add_argument('--output_dir', default='./tmp', type=str, help='Where to save model.')
     parser.add_argument('--cfg', default='./configs/default.yaml', type=str, help='Where to load cfg.')
     parser.add_argument('--seed', default=0, type=int, help='Set random seed for reproducibility.')
-    args = parser.parse_args()
+    parser.add_argument('--resume_training', action='store_true', help='Whether to train from scratch or not.')
+    args = parser.parse_args()    
 
-    # Load configuration file
-    cfg = OmegaConf.load(args.cfg)
-    cfg.dataset.dir = args.data_dir
-    cfg.output.dir = args.output_dir
-    cfg.training.seed = args.seed
+    checkpoint_path = os.path.join(args.output_dir,'checkpoints', 'last.ckpt')
 
-    # Create output directory
-    os.makedirs(cfg.output.dir, exist_ok=True)
-    os.makedirs(os.path.join(cfg.output.dir,'checkpoints'), exist_ok=True)
-    print(f"Output Directory: {cfg.output.dir}")
+    if not args.resume_training and os.path.exists(checkpoint_path):
+        print('Resume from last training...')
+        python_path = os.path.join(args.output_dir,'train.py')
+        config_path = os.path.join(args.output_dir,'config.yaml')
+        # Call train.py saved at cfg.output.dir with config.yaml in the same dir
+        subprocess.run(['python', python_path,
+                        '--data_dir', args.data_dir,
+                        '--output_dir', args.output_dir,
+                        '--cfg', config_path,                        
+                        '--resume_training'
+                        ], check=True)
+    else:
+        print('Start a new training...')
+        # Load configuration file
+        cfg = OmegaConf.load(args.cfg)
+        cfg.dataset.dir = args.data_dir
+        cfg.output.dir = args.output_dir
+        cfg.training.seed = args.seed
 
-    # Set random seed for reproducibility
-    torch.manual_seed(cfg.training.seed)
+        # Create output directory
+        os.makedirs(cfg.output.dir, exist_ok=True)
+        os.makedirs(os.path.join(cfg.output.dir,'checkpoints'), exist_ok=True)
+        print(f"Output Directory: {cfg.output.dir}")
 
-    world_size = torch.cuda.device_count()
-    mp.spawn(Trainer, args=(world_size, cfg), nprocs=world_size, join=True)
+        # Set random seed for reproducibility
+        torch.manual_seed(cfg.training.seed)
+
+        world_size = torch.cuda.device_count()
+        mp.spawn(Trainer, args=(world_size, cfg), nprocs=world_size, join=True)
 
         
 if __name__ == '__main__':

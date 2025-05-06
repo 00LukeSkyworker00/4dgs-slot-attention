@@ -31,7 +31,7 @@ class ShapeOfMotion(Dataset):
         self.img_ext = os.path.splitext(os.listdir(self.img_dir)[0])[1]
         self.frame_names = [os.path.splitext(p)[0] for p in sorted(os.listdir(self.img_dir))]
         self.imgs: list[torch.Tensor | None] = [None for _ in self.frame_names]
-        self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
+        self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=False)
         self.quat_activation = Normalize(dim=-1, p=2)
         self.color_activation = torch.sigmoid
         self.scale_activation = torch.exp
@@ -132,14 +132,14 @@ class ShapeOfMotion(Dataset):
         
     def __getitem__(self, index: int):
         gs = self.get_3dgs(torch.tensor([index]))
-        Ks = self.ckpt["model"]["Ks"][index].float()
-        w2cs = self.ckpt["model"]["w2cs"][index]
+        Ks: torch.Tensor = self.ckpt["model"]["Ks"][index].float()
+        w2cs: torch.Tensor = self.ckpt["model"]["w2cs"][index]
         data = {
             # "gt_imgs": self.get_image(index),
-            "gt_imgs": self.renderer.rasterize_gs(gs[0], gs[1], gs[2], gs[3], gs[4], Ks, w2cs),
+            "gt_imgs": self.renderer.rasterize_gs(gs, Ks, w2cs),
             "gs": gs,
-            "Ks": Ks,
-            "w2cs": w2cs,
+            "Ks": Ks.requires_grad_(False),
+            "w2cs": w2cs.requires_grad_(False),
             "ano": torch.from_numpy(self.ano[index]).float()
         }
         return data
@@ -165,6 +165,9 @@ def collate_fn_padd(batch):
     # Pad sequences along the first dimension (G)
     gs = torch.nn.utils.rnn.pad_sequence(gs, batch_first=True, padding_value=0.0)
     pe = torch.nn.utils.rnn.pad_sequence(pe, batch_first=True, padding_value=0.0)
+
+    pe = pe.detach()
+    pe.requires_grad_(False)
 
     # Compute mask (True for valid values, False for padding)
     mask = torch.nn.utils.rnn.pad_sequence(mask, batch_first=True, padding_value=0.0)
