@@ -12,9 +12,16 @@ class Renderer():
         self.requires_grad = requires_grad
         pass
 
-    def rasterize_gs(self, means, quats, scales, opacities, colors, Ks, w2cs, w=None, h=None) -> torch.Tensor:
+    def rasterize_gs(self, gs:tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], Ks, w2cs, w=None, h=None) -> torch.Tensor:
         device=w2cs.device
+        
+        if not self.requires_grad:
+            for attri in gs:
+                attri = attri.detach()
+                attri.requires_grad_(False)
+
         bg_color = torch.full((1, 3), 0.0, device=device).float()
+        bg_color.requires_grad_(False)
         Ks = Ks.unsqueeze(0)
         w2cs = w2cs.unsqueeze(0)
 
@@ -25,18 +32,18 @@ class Renderer():
 
         (
             render_colors,
-            alphas,
-            render_normals,
-            surf_normals,
             _,
             _,
-            info
+            _,
+            _,
+            _,
+            _
             ) = rasterization_2dgs(
-            means=means,
-            quats=quats,
-            scales=scales,
-            opacities=opacities.squeeze(-1),
-            colors=colors,
+            means=gs[0],
+            quats=gs[1],
+            scales=gs[2],
+            opacities=gs[3].squeeze(-1),
+            colors=gs[4],
             viewmats=w2cs,
             backgrounds=bg_color,
             Ks=Ks,
@@ -46,14 +53,13 @@ class Renderer():
             render_mode="RGB")
 
         # render_colors, alphas, info = rasterization(means,quats,scales,opacities,colors,w2c,Ks,W,H)
-        img = torch.cat([render_colors,alphas], dim=-1)
+        # render_colors = torch.cat([render_colors,alphas], dim=-1)
 
-        if self.requires_grad:
-            img = render_colors[0]
-        else:
-            img = (render_colors[0]* 255.0).to(torch.uint8)
+        if not self.requires_grad:
+            render_colors = render_colors.detach()
+            render_colors.requires_grad_(False)
 
-        return img
+        return render_colors[0]
         
     def rotate_cam(self, w2cs_init: torch.Tensor, rot_vec: tuple[int,int,int]) -> torch.Tensor:
         device=w2cs_init.device

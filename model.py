@@ -82,7 +82,7 @@ class Gs_Embedding(nn.Module):
         # pos_max = pos.amax(dim=-2, keepdim=True).detach()
         # pos_norm = (pos.detach() - pos_min) / (pos_max - pos_min)
         # pe = self.embedding(pos_norm)
-        pe = self.embedding(pos)
+        pe:torch.Tensor = self.embedding(pos)
         if self.use_fourier:
             return torch.cat([input, pe], dim=-1)
         else:
@@ -96,9 +96,9 @@ class TriPlaneEmbedding(nn.Module):
         self.zx = nn.Linear(2, feature_dim)
 
     def forward(self, pos: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = pos[:,:,:,0:1]
-        y = pos[:,:,:,1:2]
-        z = pos[:,:,:,2:3]
+        x = pos[...,0:1]
+        y = pos[...,1:2]
+        z = pos[...,2:3]
         xy = self.xy(torch.cat([x,y], dim=-1).detach())
         yz = self.yz(torch.cat([y,z], dim=-1).detach())
         zx = self.zx(torch.cat([x,z], dim=-1).detach())
@@ -106,11 +106,6 @@ class TriPlaneEmbedding(nn.Module):
 
 
 class FourierEmbedding(nn.Module):
-    """
-    Fourier-feature positional embedding.
-    Maps an input tensor of shape (..., D) to (..., D * (1 + 2 * num_freqs))
-    by concatenating [x, sin(2^i * x), cos(2^i * x) for i in 0..num_freqs-1].
-    """
     def __init__(self, input_dim: int,num_freqs: int, include_input: bool = True):
         super().__init__()
         self.dim = input_dim
@@ -140,6 +135,19 @@ class FourierEmbedding(nn.Module):
             embeds.append(torch.cos(x * freq))
 
         return torch.cat(embeds, dim=-1)
+    
+class Gs_Encoder(nn.Module):
+    def __init__(self, gs_dim, slot_dim):
+        super(Gs_Encoder, self).__init__()
+        self.encoder = nn.Linear(gs_dim, slot_dim)
+        self.embedding = Gs_Embedding(3,slot_dim)
+
+
+    def forward(self, x, pos) -> torch.Tensor:
+        out = self.encoder(x)
+        embed_out =  self.embedding(out,pos)
+        return embed_out # (B, N_S, G)
+    
 
 class Gs_Decoder(nn.Module):
     def __init__(self, slot_dim, hid_dim):
@@ -151,15 +159,28 @@ class Gs_Decoder(nn.Module):
         #     nn.Linear(hid_dim,14+1)
         # )
 
-        # self.pcm_head = nn.Sequential(
-        #     nn.Linear(slot_dim, hid_dim),
-        #     nn.ReLU(inplace=True),
-        #     nn.Linear(hid_dim,3+3+1)
-        # )
+        self.embedding = Gs_Embedding(3,slot_dim)
 
-        self.pcm_head = TriPlane_Decoder(slot_dim, hid_dim, 1+3+1)
+        self.shared_mlp = nn.Sequential(
+            nn.Linear(slot_dim, hid_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hid_dim, hid_dim),
+            nn.ReLU(inplace=True),
+        )
 
-        # self.embedding = Gs_Embedding(3, slot_dim, use_fourier=False)
+        self.pos_head = nn.Linear(hid_dim, 3)
+        self.col_head = nn.Sequential(
+            nn.Linear(hid_dim, hid_dim*2),
+            nn.ReLU(inplace=True),
+            nn.Linear(hid_dim*2, 3),
+        )
+        self.mask_head = nn.Sequential(
+            nn.Linear(hid_dim, hid_dim*2),
+            nn.ReLU(inplace=True),
+            nn.Linear(hid_dim*2, 1),
+        )
+
+        # self.pcm_head = TriPlane_Decoder(slot_dim, hid_dim, 1+3+1)
 
         # self.pos_head = Pos_Decoder(slot_dim, hid_dim)
         # self.col_head = Col_Decoder(slot_dim, hid_dim)
@@ -172,17 +193,24 @@ class Gs_Decoder(nn.Module):
         # gs, mask = torch.split(gs, [14,1], dim=-1)
 
         # Shared mlp for pos col mask
-        x_out, y_out, z_out = self.pcm_head(x, pos)
-        pos = torch.cat([x_out[:,:,:,0:1],y_out[:,:,:,0:1],z_out[:,:,:,0:1]], dim=-1)
-        out = x_out[:,:,:,1:5] + y_out[:,:,:,1:5] + z_out[:,:,:,1:5]
-        color, mask = torch.split(out, [3,1], dim=-1)
+        x_pos = self.embedding(x, pos)
+        out = self.shared_mlp(x_pos)
+        pos = self.pos_head(out)
+        color = self.col_head(out)
+        mask = self.mask_head(out)
+
+        # # Triplane decoder
+        # x_out, y_out, z_out = self.pcm_head(x, pos)
+        # pos = torch.cat([x_out[...,0:1],y_out[...,0:1],z_out[...,0:1]], dim=-1)
+        # out = x_out[...,1:5] + y_out[...,1:5] + z_out[...,1:5]
+        # color, mask = torch.split(out, [3,1], dim=-1)
 
         # x_embed = self.embedding(x, pos)
         # pos = self.pos_head(x, pos)
         # color = self.col_head(x_embed)
         # mask = self.mask_head(x_embed)
 
-        return pos, color, mask # (B, N_S, G, 14), (B, N_S, G, 1)
+        return pos, color, mask # (B, N_S, G, 3), (B, N_S, G, 3), (B, N_S, G, 1)
         return gs, mask # (B, N_S, G, 14), (B, N_S, G, 1)
 
 class Pos_Decoder(nn.Module):
@@ -260,20 +288,18 @@ class SlotAttentionAutoEncoder(nn.Module):
         self.num_iters =  attn_cfg.num_iters
 
         gs_dim = 14
-        slot_dim = 96
+        slot_dim = 320
 
-        self.encoder = nn.Linear(gs_dim, slot_dim)
-        # self.encode_embedding = Gs_Embedding(3, slot_dim, use_fourier=False)
-        # slot_dim = self.encode_embedding.out_dim
+        self.encoder = Gs_Encoder(gs_dim,slot_dim)
         
         self.slot_attention = SlotAttention(
             num_slots=self.num_slots,
             slot_dim=slot_dim,
             iters=self.num_iters,
             eps = 1e-8, 
-            hidden_dim = 128)
+            hidden_dim = 320)
         
-        self.decoder = Gs_Decoder(slot_dim, 96)
+        self.decoder = Gs_Decoder(slot_dim, 64)
 
     def forward(self, gs:torch.Tensor, pe:torch.Tensor, pad_mask=None):
         """
@@ -282,8 +308,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         mask: [B, G]
         """
         _,G,_ = gs.shape
-        x = self.encoder(gs)
-        # x = self.encode_embedding(x, pos) # [B, N_S, G, D]
+        x = self.encoder(gs, pe)
         x = self.apply_mask(x, pad_mask, 0)
         # x = gs
 
@@ -307,7 +332,7 @@ class SlotAttentionAutoEncoder(nn.Module):
 
         # Duplicate gs to match slots count and inject prediction
         gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, D]
-        gs_slot = torch.cat([pos, gs_slot[:,:,:,3:11], color], dim=-1) # [B, N_S, G, D]
+        gs_slot = torch.cat([pos, gs_slot[...,3:11], color], dim=-1) # [B, N_S, G, D]
 
         # Recconstruct gs
         gs_out = torch.sum(gs_slot * gs_mask, dim=1)
@@ -343,24 +368,23 @@ class RasterizedSlotAttentionAutoEncoder(nn.Module):
         return recon_combined, recon_slots, loss
     
 def render_gs(renderer:Renderer, gs: torch.Tensor, slot: torch.Tensor, mask: torch.Tensor, Ks: torch.Tensor, w2cs: torch.Tensor):
-    slot = torch.cat([slot, mask, mask, mask], dim=-1) # [B, N_S, G, D+3]
-
     recon_combined = []
     for batch,ks,w2c in zip(gs,Ks,w2cs):
         means, quats, scales, opacities, colors = torch.split(batch, [3,4,3,1,3], dim=-1)
-        recon_combined.append(renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
-    recon_combined = torch.stack(recon_combined,dim=0)[:,:,:,0:3]
+        recon_combined.append(renderer.rasterize_gs((means, quats, scales, opacities, colors),ks,w2c))
+    recon_combined = torch.stack(recon_combined,dim=0)[...,0:3]
 
     recon_slots = []
     slots_alpha = []
-    for batch,ks,w2c in zip(slot,Ks,w2cs):
+    slots = torch.cat([slot, mask, mask, mask], dim=-1) # [B, N_S, G, D+3]
+    for batch,ks,w2c in zip(slots,Ks,w2cs):
         for slot in batch:
-            means, quats, scales, opacities, colors,alpha = torch.split(slot, [3,4,3,1,3,3], dim=-1)
-            recon_slots.append(renderer.rasterize_gs(means, quats, scales, opacities, colors,ks,w2c))
-            slots_alpha.append(renderer.rasterize_gs(means, quats, scales, opacities, alpha,ks,w2c))
+            means, quats, scales, opacities, colors, alpha = torch.split(slot, [3,4,3,1,3,3], dim=-1)
+            recon_slots.append(renderer.rasterize_gs((means, quats, scales, opacities, colors),ks,w2c))
+            slots_alpha.append(renderer.rasterize_gs((means, quats, scales, opacities, alpha),ks,w2c))
 
-    recon_slots = torch.stack(recon_slots,dim=0)[:,:,:,0:3]
-    slots_alpha = torch.stack(slots_alpha,dim=0)[:,:,:,0:1]
+    recon_slots = torch.stack(recon_slots,dim=0)[...,0:3]
+    slots_alpha = torch.stack(slots_alpha,dim=0)[...,0:1]
     recon_slots = torch.cat([recon_slots, slots_alpha], dim=-1)
 
     return recon_combined, recon_slots
