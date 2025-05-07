@@ -1,6 +1,6 @@
 #!/bin/bash
 
-NAME=movi_a_test_05_06_split_l1_l2_fg_gs
+NAME=movi_a_test_05_07_split_l1_l2
 DATA_DIR=/home/skyworker/result/4DGS_SlotAttention/shape_of_motion
 OUT_DIR=/home/skyworker/result/4DGS_SlotAttention/slot_4dgs
 
