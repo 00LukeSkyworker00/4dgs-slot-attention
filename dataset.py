@@ -131,7 +131,8 @@ class ShapeOfMotion(Dataset):
         return transls, rots, coefs
         
     def __getitem__(self, index: int):
-        gs = self.get_3dgs(torch.tensor([index]))
+        # gs = self.get_3dgs(torch.tensor([index]))
+        gs = self.get_fg_3dgs(torch.tensor([index]))
         Ks: torch.Tensor = self.ckpt["model"]["Ks"][index].float()
         w2cs: torch.Tensor = self.ckpt["model"]["w2cs"][index]
         data = {
