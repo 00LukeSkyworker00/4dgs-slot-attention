@@ -3,7 +3,7 @@ import torch
 import torchvision
 import datetime
 import os
-from model import render_batch, Renderer
+from model import render_single, Renderer
 from torch.utils.tensorboard import SummaryWriter
 
 class Logger():
@@ -70,15 +70,17 @@ class Logger():
 
     def plt_render(self, model, epoch:int):
         gs_out, gs_slot, gs_mask, _ = model(self.gs, self.pe)
-        recon_combined, recon_slots = render_batch(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
+        recon_combined, recon_slots = render_single(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
+        code_recon, code_slot = render_single(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs, color_code=True)
         
-        recon_combined = recon_combined[0].permute(2,0,1)
+        recon_combined = recon_combined.permute(2,0,1)
+        code_recon = code_recon.permute(2,0,1)
         recon_slots = recon_slots.permute(0,3,1,2)
-
-        result = torchvision.utils.make_grid(torch.stack([self.img,recon_combined],dim=0))
+        code_slot = code_slot.permute(0,3,1,2)
+        result = torchvision.utils.make_grid(torch.stack([self.img,recon_combined,code_recon],dim=0))
         self.writer.add_image('result', result, epoch)
 
-        recon_slots = torchvision.utils.make_grid(recon_slots, nrow=5)
+        recon_slots = torchvision.utils.make_grid(torch.cat([recon_slots,code_slot],dim=0), nrow=5)
         self.writer.add_image('slots_recon', recon_slots, epoch)
 
         del recon_combined, recon_slots, gs_out, gs_slot, gs_mask

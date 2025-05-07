@@ -13,7 +13,7 @@ class Renderer():
         self.requires_grad = requires_grad
         pass
 
-    def rasterize_gs(self, gs:tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], Ks, w2cs, w=None, h=None) -> torch.Tensor:
+    def rasterize_gs(self, gs:tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], Ks, w2cs, w=None, h=None, alpha=False) -> torch.Tensor:
         device=w2cs.device
         
         if not self.requires_grad:
@@ -25,8 +25,10 @@ class Renderer():
             Ks = Ks.unsqueeze(0)
             w2cs = w2cs.unsqueeze(0)
 
-        bg_color = torch.ones(Ks.shape[0], 3, dtype=torch.float32,device=device) * 1.0
-        bg_color.requires_grad_(False)
+        # bg_color = torch.ones(Ks.shape[0], 3, dtype=torch.float32,device=device) * 1.0
+        # bg_color.requires_grad_(False)
+
+        bg_color = None
 
         if w is None:
             w = self.resolution[0]
@@ -35,7 +37,7 @@ class Renderer():
 
         (
             render_colors,
-            _,
+            alphas,
             _,
             _,
             _,
@@ -57,6 +59,9 @@ class Renderer():
 
         # render_colors, alphas, info = rasterization(means,quats,scales,opacities,colors,w2c,Ks,W,H)
         # render_colors = torch.cat([render_colors,alphas], dim=-1)
+
+        if alpha:
+            render_colors = torch.cat([render_colors,alphas], dim=-1)
 
         if not self.requires_grad:
             render_colors = render_colors.detach()
@@ -110,7 +115,7 @@ def render_batch(renderer:Renderer, gs, slot, mask, Ks, w2cs):
         for slot in batch:
             means, quats, scales, opacities, colors, alpha = torch.split(slot, [3,4,3,1,3,3], dim=-1)
             recon_slots.append(renderer.rasterize_gs((means, quats, scales, opacities, colors),ks,w2c))
-            slots_alpha.append(renderer.rasterize_gs((means, quats, scales, opacities, alpha),ks,w2c))
+            slots_alpha.append(renderer.rasterize_gs((means, quats, scales, torch.ones_like(opacities), alpha),ks,w2c))
 
     recon_slots = torch.stack(recon_slots,dim=0)[...,0:3]
     slots_alpha = torch.stack(slots_alpha,dim=0)[...,0:1]
@@ -148,7 +153,7 @@ def render_single(renderer, gs, slot, mask, Ks, w2cs, render_vid=False, color_co
 
     for gs,alpha in zip(slot,mask):
         means, quats, scales, opacities, colors = torch.split(gs, [3,4,3,1,3], dim=-1)
-        recon_slots.append(renderer.rasterize_gs((means, quats, scales, alpha, colors),Ks,w2cs))
+        recon_slots.append(renderer.rasterize_gs((means, quats, scales, alpha, colors),Ks,w2cs,alpha=True))
 
     # slots_alpha = []
     # mask_slot = torch.cat([slot, mask, mask, mask], dim=-1) # [N_S, G, D+3]
@@ -157,7 +162,8 @@ def render_single(renderer, gs, slot, mask, Ks, w2cs, render_vid=False, color_co
     #     recon_slots.append(renderer.rasterize_gs((means, quats, scales, opacities, colors),Ks,w2cs))
     #     slots_alpha.append(renderer.rasterize_gs((means, quats, scales, opacities, alpha),Ks,w2cs))
 
-    recon_slots = torch.stack(recon_slots,dim=0)[...,0:3]
+    recon_slots = torch.stack(recon_slots,dim=0)
+    # recon_slots = torch.stack(recon_slots,dim=0)[...,0:3]
     # slots_alpha = torch.stack(slots_alpha,dim=0)[...,0:1]
     # recon_slots = torch.cat([recon_slots, slots_alpha], dim=-1)
 

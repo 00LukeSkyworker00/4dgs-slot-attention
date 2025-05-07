@@ -131,8 +131,8 @@ class ShapeOfMotion(Dataset):
         return transls, rots, coefs
         
     def __getitem__(self, index: int):
-        # gs = self.get_3dgs(torch.tensor([index]))
-        gs = self.get_fg_3dgs(torch.tensor([index]))
+        gs = self.get_3dgs(torch.tensor([index]))
+        # gs = self.get_fg_3dgs(torch.tensor([index]))
         Ks: torch.Tensor = self.ckpt["model"]["Ks"][index].float()
         w2cs: torch.Tensor = self.ckpt["model"]["w2cs"][index]
         data = {
@@ -141,7 +141,7 @@ class ShapeOfMotion(Dataset):
             "gs": gs,
             "Ks": Ks.requires_grad_(False),
             "w2cs": w2cs.requires_grad_(False),
-            "ano": torch.from_numpy(self.ano[index]).float()
+            "ano": self.ano[index]
         }
         return data
     
@@ -151,7 +151,7 @@ def collate_fn_padd(batch):
     gt_imgs = torch.stack([t['gt_imgs'] for t in batch])
     Ks = torch.stack([t['Ks'] for t in batch])
     w2cs = torch.stack([t['w2cs'] for t in batch])
-    ano = torch.stack([t['ano'] for t in batch])
+    ano = np.stack([t['ano'] for t in batch])
 
     # Extract gs
     gs = []

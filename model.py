@@ -288,7 +288,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         self.num_iters =  attn_cfg.num_iters
 
         gs_dim = 14
-        slot_dim = 320
+        slot_dim = 32
 
         self.encoder = Gs_Encoder(gs_dim,slot_dim)
         
@@ -297,9 +297,9 @@ class SlotAttentionAutoEncoder(nn.Module):
             slot_dim=slot_dim,
             iters=self.num_iters,
             eps = 1e-8, 
-            hidden_dim = 320)
+            hidden_dim = 192)
         
-        self.decoder = Gs_Decoder(slot_dim, 64)
+        self.decoder = Gs_Decoder(slot_dim, 96)
 
     def forward(self, gs:torch.Tensor, pe:torch.Tensor, pad_mask=None):
         """
