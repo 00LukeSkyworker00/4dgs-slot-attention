@@ -3,7 +3,7 @@ import torch
 import torchvision
 import datetime
 import os
-from model import render_gs, Renderer
+from model import render_batch, Renderer
 from torch.utils.tensorboard import SummaryWriter
 
 class Logger():
@@ -70,7 +70,7 @@ class Logger():
 
     def plt_render(self, model, epoch:int):
         gs_out, gs_slot, gs_mask, _ = model(self.gs, self.pe)
-        recon_combined, recon_slots = render_gs(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
+        recon_combined, recon_slots = render_batch(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
         
         recon_combined = recon_combined[0].permute(2,0,1)
         recon_slots = recon_slots.permute(0,3,1,2)

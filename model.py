@@ -363,28 +363,6 @@ class RasterizedSlotAttentionAutoEncoder(nn.Module):
 
     def forward(self, gs:torch.Tensor, pe:torch.Tensor, Ks: torch.Tensor, w2cs: torch.Tensor, pad_mask=None):
         gs_out, gs_slot, gs_mask, loss = self.model(gs,pe,pad_mask)
-        recon_combined, recon_slots = render_gs(self.renderer, gs_out, gs_slot, gs_mask, Ks, w2cs)
+        recon_combined, recon_slots = render_batch(self.renderer, gs_out, gs_slot, gs_mask, Ks, w2cs)
 
         return recon_combined, recon_slots, loss
-    
-def render_gs(renderer:Renderer, gs: torch.Tensor, slot: torch.Tensor, mask: torch.Tensor, Ks: torch.Tensor, w2cs: torch.Tensor):
-    recon_combined = []
-    for batch,ks,w2c in zip(gs,Ks,w2cs):
-        means, quats, scales, opacities, colors = torch.split(batch, [3,4,3,1,3], dim=-1)
-        recon_combined.append(renderer.rasterize_gs((means, quats, scales, opacities, colors),ks,w2c))
-    recon_combined = torch.stack(recon_combined,dim=0)[...,0:3]
-
-    recon_slots = []
-    slots_alpha = []
-    slots = torch.cat([slot, mask, mask, mask], dim=-1) # [B, N_S, G, D+3]
-    for batch,ks,w2c in zip(slots,Ks,w2cs):
-        for slot in batch:
-            means, quats, scales, opacities, colors, alpha = torch.split(slot, [3,4,3,1,3,3], dim=-1)
-            recon_slots.append(renderer.rasterize_gs((means, quats, scales, opacities, colors),ks,w2c))
-            slots_alpha.append(renderer.rasterize_gs((means, quats, scales, opacities, alpha),ks,w2c))
-
-    recon_slots = torch.stack(recon_slots,dim=0)[...,0:3]
-    slots_alpha = torch.stack(slots_alpha,dim=0)[...,0:1]
-    recon_slots = torch.cat([recon_slots, slots_alpha], dim=-1)
-
-    return recon_combined, recon_slots
