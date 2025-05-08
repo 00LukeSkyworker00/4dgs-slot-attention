@@ -171,7 +171,7 @@ class Gs_Decoder(nn.Module):
         self.pos_head = nn.Sequential(
             nn.Linear(hid_dim, hid_dim*2),
             nn.ReLU(inplace=True),
-            nn.Linear(hid_dim*2, 3 * frame_num),
+            nn.Linear(hid_dim*2, frame_num*3),
         )
         self.col_head = nn.Sequential(
             nn.Linear(hid_dim, hid_dim),
@@ -291,10 +291,10 @@ class SlotAttentionAutoEncoder(nn.Module):
         self.num_slots = attn_cfg.num_slots
         self.num_iters =  attn_cfg.num_iters
 
-        frame_num = gs_dim / 7 - 1
+        self.frame_num = int(gs_dim / 7 - 1)
         slot_dim = max(0, gs_dim)
 
-        self.encoder = Gs_Encoder(gs_dim,slot_dim)
+        # self.encoder = Gs_Encoder(gs_dim,slot_dim)
         
         self.slot_attention = SlotAttention(
             num_slots=self.num_slots,
@@ -303,7 +303,7 @@ class SlotAttentionAutoEncoder(nn.Module):
             eps = 1e-8, 
             hidden_dim = 192)
         
-        self.decoder = Gs_Decoder(slot_dim, 64, frame_num)
+        self.decoder = Gs_Decoder(slot_dim, 64, self.frame_num)
 
     def forward(self, gs:torch.Tensor, pe:torch.Tensor, pad_mask=None):
         """
@@ -312,9 +312,9 @@ class SlotAttentionAutoEncoder(nn.Module):
         mask: [B, G]
         """
         _,G,_ = gs.shape
+        x = gs
         # x = self.encoder(gs, pe)
         x = self.apply_mask(x, pad_mask, 0)
-        # x = gs
 
         # Slot Attention module.
         slots = self.slot_attention(x) # [B, N_S, D]
@@ -336,7 +336,7 @@ class SlotAttentionAutoEncoder(nn.Module):
 
         # Duplicate gs to match slots count and inject prediction
         gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, D]
-        gs_slot = torch.cat([pos, gs_slot[...,3:11], color], dim=-1) # [B, N_S, G, D]
+        gs_slot = torch.cat([pos, gs_slot[...,self.frame_num*3:-3], color], dim=-1) # [B, N_S, G, D]
 
         # Recconstruct gs
         gs_out = torch.sum(gs_slot * gs_mask, dim=1)

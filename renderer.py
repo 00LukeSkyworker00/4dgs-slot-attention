@@ -14,10 +14,6 @@ class Renderer():
         self.frame_num = frame_num
         pass
 
-    @property
-    def frame_num(self) -> int:
-        return self.frame_nume
-
     def rasterize_4dgs(self, gs_4d:tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], Ks, w2cs, w=None, h=None, alpha=False) -> torch.Tensor:
         frame = self.frame_num
         scales = gs_4d[2]
@@ -26,18 +22,19 @@ class Renderer():
 
         rendered_vid = []
         for i in range(frame):
-            means = gs_4d[0][i]
-            quats = gs_4d[1][i]
+            means = gs_4d[0][:,3*i:3*i+3]
+            quats = gs_4d[1][:,4*i:4*i+4]
             render = self.rasterize_gs((means,quats,scales,opacities,colors), Ks, w2cs,w,h,alpha)
             rendered_vid.append(render)
-
+        rendered_vid = torch.stack(rendered_vid)
         return rendered_vid       
 
     def split_4dgs(self, gs_4d:torch.Tensor):
         assert len(gs_4d.shape) == 2
-        means = gs_4d[:,:3*self.frame_num].reshape(-1, self.frame_num, 3)
-        quats = gs_4d[:,4*self.frame_num:-3].reshape(-1, self.frame_num, 4)
-        others = gs_4d[:,-3:].unsqueeze(1).expand(-1, self.frame_num, -1)
+        G,_ = gs_4d.shape
+        means = gs_4d[:,:3*self.frame_num].reshape(G, self.frame_num, 3)
+        quats = gs_4d[:,3*self.frame_num:-7].reshape(G, self.frame_num, 4)
+        others = gs_4d[:,-7:].unsqueeze(1).expand(-1, self.frame_num, -1)
         gs = torch.cat([means,quats,others],dim=-1).permute(1,0,2)
         return gs
 
@@ -129,18 +126,19 @@ class Renderer():
 
         return Ks, w2cs        
     
-def render_batch(renderer:Renderer, batch_gs, batch_slots, mask, Ks, w2cs, color_code=False):
+def render_batch(renderer:Renderer, batch_gs, batch_slots, batch_mask, batch_Ks, batch_w2cs):
     recon_combined = []
-    for gs,ks,w2c in zip(batch_gs,Ks,w2cs):
-        recon_combined.append(renderer.rasterize_gs(gs,ks,w2c)[...,0:3])
+    for gs,ks,w2cs in zip(batch_gs,batch_Ks,batch_w2cs):
+        gs = tuple(torch.split(gs, [3,4,3,1,3], dim=-1))
+        recon_combined.append(renderer.rasterize_gs(gs,ks,w2cs)[...,0:3])
     recon_combined = torch.stack(recon_combined,dim=0)
 
     recon_slots = []
-    for slots,ks,w2c in zip(batch_slots,Ks,w2cs):
+    for slots,mask,ks,w2cs in zip(batch_slots,batch_mask,batch_Ks,batch_w2cs):
         render_slots = []
         for gs,alpha in zip(slots,mask):
             means, quats, scales, _, colors = torch.split(gs, [3,4,3,1,3], dim=-1)
-            render_slots.append(renderer.rasterize_gs((means, quats, scales, alpha, colors),Ks,w2cs,alpha=True)[...,0:3])
+            render_slots.append(renderer.rasterize_gs((means, quats, scales, alpha, colors),ks,w2cs,alpha=True)[...,0:3])
         recon_slots.append(torch.stack(render_slots,dim=0))
     recon_slots = torch.stack(recon_slots,dim=0)
     
@@ -230,7 +228,7 @@ def render_single_vid(renderer:Renderer, gs, slot, mask, Ks:torch.Tensor, w2cs:t
         slot[..., -3:] = color_code
         gs = torch.sum(slot * mask, dim=0)
     
-    mask = mask.unsqueeze(0).expand(renderer.frame_num,-1,-1)
+    mask = mask.unsqueeze(0).expand(renderer.frame_num,-1,-1,-1)
 
     gs_vid = renderer.split_4dgs(gs) # [F,G,D]
     slot_vid = []

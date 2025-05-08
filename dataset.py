@@ -31,7 +31,6 @@ class ShapeOfMotion(Dataset):
         self.img_ext = os.path.splitext(os.listdir(self.img_dir)[0])[1]
         self.frame_names = [os.path.splitext(p)[0] for p in sorted(os.listdir(self.img_dir))]
         self.imgs: list[torch.Tensor | None] = [None for _ in self.frame_names]
-        self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
         self.transform = transform
         self.quat_activation = Normalize(dim=-1, p=2)
         self.color_activation = torch.sigmoid
@@ -39,6 +38,7 @@ class ShapeOfMotion(Dataset):
         self.opacity_activation = torch.sigmoid
         self.motion_coef_activation = nn.Softmax(dim=-1)
         self.num_frame = len(self.frame_names)
+        self.renderer = Renderer(tuple(data_cfg.resolution), self.num_frame, requires_grad=False)
 
     def __len__(self):
         return 1
@@ -74,17 +74,15 @@ class ShapeOfMotion(Dataset):
             means_4d.append(means_ts[:, 0])
             quats_4d.append(quats_ts[:, 0])
 
-        means = torch.stack(means_4d, dim=0)
-        quats = torch.stack(quats_4d, dim=0)
-
-        print(means.shape,quats.shape)
+        means = torch.cat(means_4d, dim=-1) # (G, 3*F)
+        quats = torch.cat(quats_4d, dim=-1) # (G, 4*F)
          
         return means, quats, scales, opacities, colors
     
     def get_all_4dgs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         means,quats,scales,opacities,color = self.load_3dgs('bg')
-        means = means.unsqueeze(0).repeat(self.num_frame,1,1)
-        quats = quats.unsqueeze(0).repeat(self.num_frame,1,1)
+        means = means.repeat(1, self.num_frame)
+        quats = quats.repeat(1, self.num_frame)
         bg_gs = means,quats,scales,opacities,color
         fg_gs = self.get_fg_4dgs()
         return tuple(torch.cat([a, b], dim=-2) for a, b in zip(bg_gs, fg_gs))
@@ -132,11 +130,6 @@ class ShapeOfMotion(Dataset):
     
     def __getitem__(self, index: int):
         gs = self.get_all_4dgs()
-        print(gs[0].shape)
-        print(gs[1].shape)
-        print(gs[2].shape)
-        print(gs[3].shape)
-        print(gs[4].shape)
         Ks: torch.Tensor = self.ckpt["model"]["Ks"][index].float()
         w2cs: torch.Tensor = self.ckpt["model"]["w2cs"][index]
         data = {
@@ -144,7 +137,8 @@ class ShapeOfMotion(Dataset):
             "gt_imgs": self.renderer.rasterize_4dgs(gs, Ks, w2cs),
             "gs": gs,
             "Ks": Ks,
-            "w2cs": w2cs
+            "w2cs": w2cs,
+            "ano": torch.from_numpy(self.ano[index]).float()
         }
         return data
     
@@ -153,7 +147,6 @@ def collate_fn_padd(batch):
     gt_imgs = torch.stack([t['gt_imgs'] for t in batch])
     Ks = torch.stack([t['Ks'] for t in batch])
     w2cs = torch.stack([t['w2cs'] for t in batch])
-    ano = np.stack([t['ano'] for t in batch])
     ano = np.stack([t['ano'] for t in batch])
 
     # Extract all_gs
@@ -165,16 +158,21 @@ def collate_fn_padd(batch):
     for value in gs_split:
         pad = torch.nn.utils.rnn.pad_sequence(value, batch_first=True, padding_value=0.0)
         gs.append(pad)
-    B,G,_ = gs[0].shape
-    mask = torch.zeros([B,G,1], dtype=torch.float32)
+    B,G,_ = gs[-1].shape
+    mask = torch.zeros([B,G], dtype=torch.bool)
     for i, seq_len in enumerate([len(t) for t in gs_split[0]]):
-        mask[i, :seq_len] = 1.
+        mask[i, :seq_len] = 1
+
+    pe = gs[0][...,:3] # select first frame only for pe
+    pe = torch.nn.utils.rnn.pad_sequence(pe, batch_first=True, padding_value=0.0)
+
+    gs = torch.cat(gs,dim=-1)
 
     out = {
         "gt_imgs": gt_imgs,
         "gs": gs,
         "mask": mask,
-        "pe": torch.nn.utils.rnn.pad_sequence(gs_split[0], batch_first=True, padding_value=0.0),
+        "pe": pe,
         "Ks": Ks,
         "w2cs": w2cs,
         "ano": ano,

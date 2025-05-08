@@ -32,16 +32,16 @@ def save_env(cfg):
         OmegaConf.save(cfg, f)
 
 def PosLoss(loss_fn, gt, pred, pad_mask):
-    gt = gt[...,:3][pad_mask]
-    pred = pred[...,:3][pad_mask]
+    gt = gt[...,:3*24][pad_mask]
+    pred = pred[...,:3*24][pad_mask]
     loss = 0
     for fn in loss_fn:
         loss += fn(gt,pred)
     return loss
 
 def ColorLoss(loss_fn, gt, pred, pad_mask):
-    gt = gt[...,11:14][pad_mask]
-    pred = pred[...,11:14][pad_mask]
+    gt = gt[...,-3:][pad_mask]
+    pred = pred[...,-3:][pad_mask]
     loss = 0
     for fn in loss_fn:
         loss += fn(gt,pred)
@@ -99,12 +99,14 @@ def Trainer(rank, world_size, cfg):
         )
     
     del train_list, val_list
+
+    test_set = collate_fn_padd([train_set[0]])
     
     # Setup tensorboard and save environment
     if rank == 0:
-        logger = Logger(val_set[0], len(train_set), len(val_set), cfg, device)
+        logger = Logger(test_set, len(train_set), len(val_set), cfg, device)
 
-    model = SlotAttentionAutoEncoder(cfg.dataset, cfg.cnn, cfg.attention,train_set[0]['gs'].shape(-1))
+    model = SlotAttentionAutoEncoder(cfg.dataset, cfg.cnn, cfg.attention,test_set['gs'].shape[-1])
     model = model.to(device)
 
     # Wrap model in DDP
@@ -178,7 +180,7 @@ def Trainer(rank, world_size, cfg):
 
                 # Backward pass and optimizer step
                 optimizer.zero_grad()
-                loss.backward()                
+                loss.backward()
                 optimizer.step()
             
                 del gs_recon, loss, pos_loss, color_loss
