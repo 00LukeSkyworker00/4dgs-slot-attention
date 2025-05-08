@@ -159,13 +159,9 @@ def Trainer(rank, world_size, cfg):
 
                 # Get inputs and lengths
                 # gt_imgs = sample['gt_imgs'].to(device)
-                gs = sample['all_gs'].to(device)
-                mask = sample['all_mask'].to(device)
-                pos_embed = sample['all_gs_pos'].to(device)
-                print(pos_embed.shape)
-                exit()
-                Ks = sample['Ks']
-                w2cs = sample['w2cs']
+                gs = sample['gs'].to(device)
+                pad_mask = sample['mask'].to(device)
+                pe = sample['pe'].to(device)
 
                 # Forward pass
                 gs_recon, _, _, loss = model(gs, pe, pad_mask=pad_mask)

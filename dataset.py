@@ -74,18 +74,22 @@ class ShapeOfMotion(Dataset):
             means_4d.append(means_ts[:, 0])
             quats_4d.append(quats_ts[:, 0])
 
-        means = torch.cat(means_4d, dim=-1)
-        quats = torch.cat(quats_4d, dim=-1)
+        means = torch.stack(means_4d, dim=0)
+        quats = torch.stack(quats_4d, dim=0)
+
+        print(means.shape,quats.shape)
          
         return means, quats, scales, opacities, colors
     
     def get_all_4dgs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         means,quats,scales,opacities,color = self.load_3dgs('bg')
-        means = means.repeat(1,self.num_frame)
-        quats = quats.repeat(1,self.num_frame)
+        means = means.unsqueeze(0).repeat(self.num_frame,1,1)
+        quats = quats.unsqueeze(0).repeat(self.num_frame,1,1)
+        print(means.shape)
+        print(quats.shape)
         bg_gs = means,quats,scales,opacities,color
         fg_gs = self.get_fg_4dgs()
-        return tuple(torch.cat([a, b]) for a, b in zip(bg_gs, fg_gs))
+        return tuple(torch.cat([a, b], dim=-2) for a, b in zip(bg_gs, fg_gs))
 
     def get_transforms(self, ts: torch.Tensor| None = None) -> torch.Tensor:
         transls, rots, coefs = self.load_motion_base()  # (K, B, 3), (K, B, 6), (G, K)
@@ -130,12 +134,16 @@ class ShapeOfMotion(Dataset):
     
     def __getitem__(self, index: int):
         gs = self.get_all_4dgs()
+        print(gs[0].shape)
+        print(gs[1].shape)
+        print(gs[2].shape)
+        print(gs[3].shape)
+        print(gs[4].shape)
         Ks: torch.Tensor = self.ckpt["model"]["Ks"][index].float()
         w2cs: torch.Tensor = self.ckpt["model"]["w2cs"][index]
         data = {
             # "gt_imgs": self.get_image(index),
-            "gt_imgs": self.renderer.rasterize_gs(gs[0][:,0:3], gs[1][:,0:4], gs[-3], gs[-2], gs[-1], Ks, w2cs),
-            # "fg_gs": self.get_fg_3dgs(torch.tensor([index])),
+            "gt_imgs": self.renderer.rasterize_4dgs(gs, Ks, w2cs),
             "gs": gs,
             "Ks": Ks,
             "w2cs": w2cs
@@ -148,6 +156,7 @@ def collate_fn_padd(batch):
     Ks = torch.stack([t['Ks'] for t in batch])
     w2cs = torch.stack([t['w2cs'] for t in batch])
     ano = np.stack([t['ano'] for t in batch])
+    ano = np.stack([t['ano'] for t in batch])
 
     # Extract all_gs
     gs = [t['gs'] for t in batch]
@@ -158,7 +167,6 @@ def collate_fn_padd(batch):
     for value in gs_split:
         pad = torch.nn.utils.rnn.pad_sequence(value, batch_first=True, padding_value=0.0)
         gs.append(pad)
-
     B,G,_ = gs[0].shape
     mask = torch.zeros([B,G,1], dtype=torch.float32)
     for i, seq_len in enumerate([len(t) for t in gs_split[0]]):
@@ -168,6 +176,7 @@ def collate_fn_padd(batch):
         "gt_imgs": gt_imgs,
         "gs": gs,
         "mask": mask,
+        "pe": torch.nn.utils.rnn.pad_sequence(gs_split[0], batch_first=True, padding_value=0.0),
         "Ks": Ks,
         "w2cs": w2cs,
         "ano": ano,

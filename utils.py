@@ -3,14 +3,14 @@ import torch
 import torchvision
 import datetime
 import os
-from model import render_single, Renderer
+from model import render_single_vid, Renderer
 from torch.utils.tensorboard import SummaryWriter
 
 class Logger():
     def __init__(self, test_set, train_len, val_len, cfg, device):
         self.writer = SummaryWriter(os.path.join(cfg.output.dir, 'logs'))
 
-        self.img = test_set['gt_imgs'].permute(2,0,1)
+        self.img = test_set['gt_imgs']
         self.gs = torch.cat(test_set['gs'], dim=-1).to(device).unsqueeze(0)
         self.pe = test_set['gs'][0].to(device).unsqueeze(0)
         self.Ks = test_set['Ks'].unsqueeze(0)
@@ -70,17 +70,22 @@ class Logger():
 
     def plt_render(self, model, epoch:int):
         gs_out, gs_slot, gs_mask, _ = model(self.gs, self.pe)
-        recon_combined, recon_slots = render_single(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
-        code_recon, code_slot = render_single(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs, color_code=True)
+        recon_combined, recon_slots = render_single_vid(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
+        code_recon, code_slot = render_single_vid(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs, color_code=True)
         
-        recon_combined = recon_combined.permute(2,0,1)
-        code_recon = code_recon.permute(2,0,1)
-        recon_slots = recon_slots.permute(0,3,1,2)
-        code_slot = code_slot.permute(0,3,1,2)
-        result = torchvision.utils.make_grid(torch.stack([self.img,recon_combined,code_recon],dim=0))
-        self.writer.add_image('result', result, epoch)
+        result = []
+        for gt,combine,color_code in zip(self.img,recon_combined,code_recon):
+            gt = gt.permute(2,0,1)
+            combine = combine.permute(2,0,1)
+            color_code = color_code.permute(2,0,1)
+            result.append(torchvision.utils.make_grid(torch.stack([gt,combine,color_code],dim=0)))
+        self.writer.add_video('result', torch.stack(result), epoch,fps=10)
 
-        recon_slots = torchvision.utils.make_grid(torch.cat([recon_slots,code_slot],dim=0), nrow=5)
-        self.writer.add_image('slots_recon', recon_slots, epoch)
+        result_slots = []
+        for slots,color_code_slot in zip(recon_slots,code_slot): 
+            slots = slots.permute(0,3,1,2)
+            color_code_slot = color_code_slot.permute(0,3,1,2)
+            result_slots.append(torchvision.utils.make_grid(torch.stack([slots,color_code_slot],dim=0)))
+        self.writer.add_video('slots_recon', torch.stack(result_slots), epoch,fps=10)
 
         del recon_combined, recon_slots, gs_out, gs_slot, gs_mask

@@ -1,11 +1,12 @@
 #!/bin/bash
 
-NAME=movi_a_test_05_07_split_l1_l2
+NAME=movi_a_test_05_08_temporal_test
 DATA_DIR=/home/skyworker/result/4DGS_SlotAttention/shape_of_motion
 OUT_DIR=/home/skyworker/result/4DGS_SlotAttention/slot_4dgs
 
 # Set CUDA devices 2 and 3
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=2
+# export CUDA_VISIBLE_DEVICES=2,3,4,5,6.9
 
 python train.py \
     --data_dir $DATA_DIR \
