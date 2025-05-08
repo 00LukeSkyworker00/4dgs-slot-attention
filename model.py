@@ -150,7 +150,7 @@ class Gs_Encoder(nn.Module):
     
 
 class Gs_Decoder(nn.Module):
-    def __init__(self, slot_dim, hid_dim):
+    def __init__(self, slot_dim, hid_dim, frame_num):
         super(Gs_Decoder, self).__init__()
 
         # self.mlp_head = nn.Sequential(
@@ -168,16 +168,20 @@ class Gs_Decoder(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        self.pos_head = nn.Linear(hid_dim, 3)
-        self.col_head = nn.Sequential(
+        self.pos_head = nn.Sequential(
             nn.Linear(hid_dim, hid_dim*2),
             nn.ReLU(inplace=True),
-            nn.Linear(hid_dim*2, 3),
+            nn.Linear(hid_dim*2, 3 * frame_num),
+        )
+        self.col_head = nn.Sequential(
+            nn.Linear(hid_dim, hid_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hid_dim, 3),
         )
         self.mask_head = nn.Sequential(
-            nn.Linear(hid_dim, hid_dim*2),
+            nn.Linear(hid_dim, hid_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hid_dim*2, 1),
+            nn.Linear(hid_dim, 1),
         )
 
         # self.pcm_head = TriPlane_Decoder(slot_dim, hid_dim, 1+3+1)
@@ -278,7 +282,7 @@ class Gs_Mask_Decoder(nn.Module):
 
 class SlotAttentionAutoEncoder(nn.Module):
     # def __init__(self, resolution, num_slots, num_iters, hid_dim):
-    def __init__(self, data_cfg, cnn_cfg, attn_cfg):
+    def __init__(self, data_cfg, cnn_cfg, attn_cfg, gs_dim):
         super().__init__()
         self.hid_dim = cnn_cfg.hid_dim
         self.gs_pos_embed = cnn_cfg.gs_pos_embed
@@ -287,8 +291,8 @@ class SlotAttentionAutoEncoder(nn.Module):
         self.num_slots = attn_cfg.num_slots
         self.num_iters =  attn_cfg.num_iters
 
-        gs_dim = 14
-        slot_dim = 32
+        frame_num = gs_dim / 7 - 1
+        slot_dim = max(0, gs_dim)
 
         self.encoder = Gs_Encoder(gs_dim,slot_dim)
         
@@ -299,7 +303,7 @@ class SlotAttentionAutoEncoder(nn.Module):
             eps = 1e-8, 
             hidden_dim = 192)
         
-        self.decoder = Gs_Decoder(slot_dim, 96)
+        self.decoder = Gs_Decoder(slot_dim, 64, frame_num)
 
     def forward(self, gs:torch.Tensor, pe:torch.Tensor, pad_mask=None):
         """
@@ -308,7 +312,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         mask: [B, G]
         """
         _,G,_ = gs.shape
-        x = self.encoder(gs, pe)
+        # x = self.encoder(gs, pe)
         x = self.apply_mask(x, pad_mask, 0)
         # x = gs
 

@@ -85,8 +85,6 @@ class ShapeOfMotion(Dataset):
         means,quats,scales,opacities,color = self.load_3dgs('bg')
         means = means.unsqueeze(0).repeat(self.num_frame,1,1)
         quats = quats.unsqueeze(0).repeat(self.num_frame,1,1)
-        print(means.shape)
-        print(quats.shape)
         bg_gs = means,quats,scales,opacities,color
         fg_gs = self.get_fg_4dgs()
         return tuple(torch.cat([a, b], dim=-2) for a, b in zip(bg_gs, fg_gs))

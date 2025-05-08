@@ -59,22 +59,7 @@ def Trainer(rank, world_size, cfg):
 
     # Initialize process group for DDP
     init_process_group(backend='nccl', rank=rank, world_size=world_size)
-
-    model = SlotAttentionAutoEncoder(cfg.dataset, cfg.cnn, cfg.attention)
-    model = model.to(device)
-
-    # Wrap model in DDP
-    model = DDP(model, device_ids=[rank])
-    # model = DDP(model, device_ids=[rank], find_unused_parameters=True)
-
-    # Loss function
-    mse_loss = nn.MSELoss()
-    l1_loss = nn.L1Loss()
-
-    # Define optimizer
-    params = [{'params': model.parameters()}]
-    optimizer = optim.Adam(params, lr=cfg.training.lr)   
-
+    
     # Create DataLoader for train set
     train_list = []    
     for i in range(cfg.dataset.train_idx[0], cfg.dataset.train_idx[1] + 1):
@@ -118,6 +103,21 @@ def Trainer(rank, world_size, cfg):
     # Setup tensorboard and save environment
     if rank == 0:
         logger = Logger(val_set[0], len(train_set), len(val_set), cfg, device)
+
+    model = SlotAttentionAutoEncoder(cfg.dataset, cfg.cnn, cfg.attention,train_set[0]['gs'].shape(-1))
+    model = model.to(device)
+
+    # Wrap model in DDP
+    model = DDP(model, device_ids=[rank])
+    # model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+
+    # Loss function
+    mse_loss = nn.MSELoss()
+    l1_loss = nn.L1Loss()
+
+    # Define optimizer
+    params = [{'params': model.parameters()}]
+    optimizer = optim.Adam(params, lr=cfg.training.lr)
 
     # Resume from last checkpoint if exist
     start_epoch = 0
