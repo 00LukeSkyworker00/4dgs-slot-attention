@@ -3,8 +3,9 @@ import torch
 import torchvision
 import datetime
 import os
-from model import render_single_vid, Renderer
+from model import Renderer
 from torch.utils.tensorboard import SummaryWriter
+from sklearn.metrics import adjusted_rand_score
 
 class Logger():
     def __init__(self, test_set, train_len, val_len, cfg, device):
@@ -22,20 +23,35 @@ class Logger():
         self.p_loss = 0
         self.c_loss = 0
 
-        self.ari = 0
-
-        self.best = float('inf')
+        self.best_loss = float('inf')
+        self.best_ari = 0
+        self.best_arifg = 0
 
         self.train_len = train_len
         self.val_len = val_len
+
+        self.ari = 0
+        self.ari_fg = 0
+        self.ari_sample_len = 0
 
     def record_loss(self, total_loss:torch.Tensor, p_loss:torch.Tensor, c_loss:torch.Tensor):
         self.total_loss += total_loss.item()
         self.p_loss += p_loss.item()
         self.c_loss += c_loss.item()
 
-    def record_ari(self, gt:torch.Tensor, pred:torch.Tensor):
-        pass
+    def record_ari(self, batch_gs, batch_mask, batch_Ks, batch_w2cs, batch_ano):
+        for gs,mask,Ks,w2cs,vid_ano in zip(batch_gs,batch_mask,batch_Ks,batch_w2cs, batch_ano):
+            vid_mask = self.renderer.make_vid_slot(gs, mask, Ks, w2cs, mask_as_color=True)
+            vid_mask = vid_mask.argmax(dim=1).cpu().numpy()
+            
+            for ano,pred in zip(vid_ano,vid_mask):
+                pred_fg = pred[ano != 0].flatten()
+                anos_fg = ano[ano != 0].squeeze(-1).flatten()
+                pred = pred.flatten()
+                anos = ano.squeeze(-1).flatten()
+                self.ari += adjusted_rand_score(anos,pred)
+                self.ari_fg += adjusted_rand_score(anos_fg,pred_fg)
+            self.ari_sample_len += len(vid_mask)        
 
     def plt_loss(self, epoch:int, start_time, mode='Train') -> bool:
         assert mode in ['Train', 'Val']
@@ -49,8 +65,8 @@ class Logger():
         self.c_loss /= len
 
         isBest = False
-        if mode == 'Val' and self.best > self.total_loss:
-            self.best = self.total_loss
+        if mode == 'Val' and self.best_loss > self.total_loss:
+            self.best_loss = self.total_loss
             isBest = True
 
         self.writer.add_scalars(f'{mode} Loss', {
@@ -67,31 +83,40 @@ class Logger():
         self.c_loss = 0
 
         return isBest
+    
+    def plt_ari(self, epoch) -> tuple[bool,bool]:
+
+        ari = self.ari / self.ari_sample_len
+        arifg = self.ari_fg / self.ari_sample_len
+        self.writer.add_scalars('Metrics', {
+            'ARI': ari,
+            'ARI-FG': arifg,
+        }, epoch)
+
+        isBestAri = False
+        isBestArifg = False
+        if self.best_ari < ari:
+            self.best_ari = ari
+            isBestAri = True
+        if self.best_arifg < arifg:
+            self.best_arifg = arifg
+            isBestArifg = True
+        
+        self.ari = 0
+        self.ari_fg = 0
+        self.ari_sample_len = 0
+        
+        return isBestAri, isBestArifg
 
     def plt_render(self, model, epoch:int):
         gs_out, gs_slot, gs_mask, _ = model(self.gs, self.pe)
-        recon_combined, recon_slots = render_single_vid(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
-        code_recon, code_slot = render_single_vid(self.renderer, gs_out, gs_slot, gs_mask, self.Ks, self.w2cs, color_code=True)
-        
-        # result = []
-        # for gt,combine,color_code in zip(self.img,recon_combined,code_recon):
-        #     gt = gt.permute(2,0,1)
-        #     combine = combine.permute(2,0,1)
-        #     color_code = color_code.permute(2,0,1)
-        #     result.append(torchvision.utils.make_grid(torch.stack([gt,combine,color_code],dim=0)))
-        # result = torch.stack(result)
+        recon_combined, recon_slots = self.renderer.make_vid(gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
+        code_combined, code_slot = self.renderer.make_vid(self.gs, self.gs, gs_mask, self.Ks, self.w2cs, color_code=True)
 
-        # result_slots = []
-        # for slots,color_code_slot in zip(recon_slots,code_slot): 
-        #     slots = slots.permute(0,3,1,2)
-        #     color_code_slot = color_code_slot.permute(0,3,1,2)
-        #     result_slots.append(torchvision.utils.make_grid(torch.stack([slots,color_code_slot],dim=0)))
-        # result_slots = torch.stack(result_slots)
-
-        result = torch.stack([self.img,recon_combined,code_recon]).permute(0,1,4,2,3)
+        result = torch.stack([self.img,recon_combined,code_combined]).permute(0,1,4,2,3)
         result_slots = torch.cat([recon_slots,code_slot], dim=1).permute(1,0,4,2,3)
         
         self.writer.add_video('result', result, epoch,fps=10)
         self.writer.add_video('slots_recon', result_slots, epoch,fps=10)
 
-        del recon_combined, recon_slots, gs_out, gs_slot, gs_mask
+        del recon_combined, recon_slots, code_combined, code_slot, gs_out, gs_slot, gs_mask

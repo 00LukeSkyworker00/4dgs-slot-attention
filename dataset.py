@@ -138,7 +138,7 @@ class ShapeOfMotion(Dataset):
             "gs": gs,
             "Ks": Ks,
             "w2cs": w2cs,
-            "ano": torch.from_numpy(self.ano[index]).float()
+            "ano": torch.from_numpy(self.ano).float()
         }
         return data
     
@@ -163,8 +163,9 @@ def collate_fn_padd(batch):
     for i, seq_len in enumerate([len(t) for t in gs_split[0]]):
         mask[i, :seq_len] = 1
 
-    pe = gs[0][...,:3] # select first frame only for pe
-    pe = torch.nn.utils.rnn.pad_sequence(pe, batch_first=True, padding_value=0.0)
+    # Get ever N frame's pos for pe
+    pe = gs[0].view(B,G,-1,3)
+    pe = pe[...,::4].reshape(B, G, -1)
 
     gs = torch.cat(gs,dim=-1)
 

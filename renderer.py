@@ -125,116 +125,141 @@ class Renderer():
         w2cs = torch.stack(w2cs)
 
         return Ks, w2cs        
+        
+    def generate_combined(self, batch_gs, batch_Ks, batch_w2cs):
+        recon_combined = []
+        for gs,ks,w2cs in zip(batch_gs,batch_Ks,batch_w2cs):
+            gs = tuple(torch.split(gs, [3,4,3,1,3], dim=-1))
+            recon_combined.append(self.rasterize_gs(gs,ks,w2cs)[...,0:3])
+        recon_combined = torch.stack(recon_combined,dim=0)
+
+        return recon_combined
+
+    def generate_slot(self, batch_slots, batch_mask, batch_Ks, batch_w2cs, mask_as_color=False):
+        recon_slots = []
+        for slots,mask,ks,w2cs in zip(batch_slots,batch_mask,batch_Ks,batch_w2cs):
+            render_slots = []
+            for gs,alpha in zip(slots,mask):
+                means, quats, scales, _, colors = torch.split(gs, [3,4,3,1,3], dim=-1)
+                if mask_as_color:
+                    render_slots.append(self.rasterize_gs((means, quats, scales, torch.ones_like(alpha), alpha*3),ks,w2cs,alpha=True)[...,0:1])
+                else:  
+                    render_slots.append(self.rasterize_gs((means, quats, scales, alpha, colors),ks,w2cs,alpha=True))
+            recon_slots.append(torch.stack(render_slots,dim=0))
+        recon_slots = torch.stack(recon_slots,dim=0)
+
+        return recon_slots
     
-def render_batch(renderer:Renderer, batch_gs, batch_slots, batch_mask, batch_Ks, batch_w2cs):
-    recon_combined = []
-    for gs,ks,w2cs in zip(batch_gs,batch_Ks,batch_w2cs):
-        gs = tuple(torch.split(gs, [3,4,3,1,3], dim=-1))
-        recon_combined.append(renderer.rasterize_gs(gs,ks,w2cs)[...,0:3])
-    recon_combined = torch.stack(recon_combined,dim=0)
+    def make_vid(self, gs, slot, mask, Ks, w2cs, render_rotate=False, color_code=False):
+        out_combined = self.make_vid_combined(gs, mask, Ks, w2cs, render_rotate, color_code)
+        out_slot = self.make_vid_slot(self, slot, mask, Ks, w2cs, render_rotate, color_code, mask_as_color=False)
+        # out_mask = self.make_vid_slot(self, slot, mask, Ks, w2cs, render_rotate, color_code, mask_as_color=True)
+        return out_combined, out_slot
 
-    recon_slots = []
-    for slots,mask,ks,w2cs in zip(batch_slots,batch_mask,batch_Ks,batch_w2cs):
-        render_slots = []
-        for gs,alpha in zip(slots,mask):
-            means, quats, scales, _, colors = torch.split(gs, [3,4,3,1,3], dim=-1)
-            render_slots.append(renderer.rasterize_gs((means, quats, scales, alpha, colors),ks,w2cs,alpha=True)[...,0:3])
-        recon_slots.append(torch.stack(render_slots,dim=0))
-    recon_slots = torch.stack(recon_slots,dim=0)
-    
-    # slots_alpha = []
-    # slots = torch.cat([slot, mask, mask, mask], dim=-1) # [B, N_S, G, D+3]
-    # for batch,ks,w2c in zip(slots,Ks,w2cs):
-    #     for slot in batch:
-    #         means, quats, scales, opacities, colors, alpha = torch.split(slot, [3,4,3,1,3,3], dim=-1)
-    #         recon_slots.append(renderer.rasterize_gs((means, quats, scales, opacities, colors),ks,w2c))
-    #         slots_alpha.append(renderer.rasterize_gs((means, quats, scales, torch.ones_like(opacities), alpha),ks,w2c))
+    def make_vid_combined(self, gs, mask, Ks:torch.Tensor, w2cs:torch.Tensor, render_rotate=False, color_code=False):
+        '''
+        gs: [1,G,F*7+7]
+        mask: [1,N_S,G,1]
+        '''
+        gs = gs[0]
+        mask = mask[0]
+        Ks = Ks[0]
+        w2cs = w2cs[0]
 
-    # recon_slots = torch.stack(recon_slots,dim=0)[...,0:3]
-    # slots_alpha = torch.stack(slots_alpha,dim=0)[...,0:1]
-    # recon_slots = torch.cat([recon_slots, slots_alpha], dim=-1)
+        if render_rotate:
+            Ks, w2cs = self.simple_track(Ks, w2cs, self.frame_num, 'z')
+        else:
+            Ks = Ks.unsqueeze(0).expand(self.frame_num,-1,-1)
+            w2cs = w2cs.unsqueeze(0).expand(self.frame_num,-1,-1)
+        
+        if color_code:
+            cmap = self.cmap_mask(mask) # [N_S,1,3]
+            cmap_combined = torch.sum(cmap * mask, dim=0) # [G,3]
+            gs[...,-3:] = cmap_combined
 
-    return recon_combined, recon_slots
+        mask = mask.unsqueeze(0).expand(self.frame_num,-1,-1,-1)
+        gs_vid = self.split_4dgs(gs) # [F,G,D]
 
-def render_single(renderer:Renderer, gs, slot, mask, Ks:torch.Tensor, w2cs:torch.Tensor, color_code=False):
-    gs = gs[0]
-    slot = slot[0]
-    mask = mask[0]
-    Ks = Ks[0]
-    w2cs = w2cs[0]   
-    
-    num_slot = slot.shape[0]
-    color_unit = 1.0 / float(num_slot-1)
-    cmap = plt.get_cmap('inferno')
-    if color_code:
+        return self.generate_combined(self,gs_vid,mask,Ks,w2cs)
+
+    def make_vid_slot(self, slot, mask, Ks:torch.Tensor, w2cs:torch.Tensor, render_rotate=False, color_code=False, mask_as_color=False):
+        '''
+        gs: [1,G,F*7+7]
+        slot: [1,N_S,G,F*7+7]
+        mask: [1,N_S,G,1]
+        '''
+        slot = slot[0]
+        mask = mask[0]
+        Ks = Ks[0]
+        w2cs = w2cs[0]
+        
+        if len(slot.shape) == 2:
+            slot = slot.unsqueeze(0).repeat(mask.shape[0],1,1)
+
+        if render_rotate:
+            Ks, w2cs = self.simple_track(Ks, w2cs, self.frame_num, 'z')
+        else:
+            Ks = Ks.unsqueeze(0).expand(self.frame_num,-1,-1)
+            w2cs = w2cs.unsqueeze(0).expand(self.frame_num,-1,-1)
+        
+        if not mask_as_color and color_code:
+            cmap = self.cmap_mask(mask) # [N_S,1,3]
+            cmap_slot = cmap * mask # [N_S,G,3]
+            slot[...,-3:] = cmap_slot
+        
+        mask = mask.unsqueeze(0).expand(self.frame_num,-1,-1,-1)
+
+        slot_vid = []
+        for k in slot:
+            slot_vid.append(self.split_4dgs(k))
+        slot_vid = torch.stack(slot_vid) # [N_S,F,G,D]
+        slot_vid = slot_vid.permute(1,0,2,3) # [F,N_S,G,D]
+
+        return self.generate_slot(self,slot_vid,mask,Ks,w2cs,mask_as_color=mask_as_color)
+
+
+    def cmap_mask(mask):
+        num_slot = mask.shape[0]
+        color_unit = 1.0 / float(num_slot-1)
+        cmap = plt.get_cmap('hsv')
         color_code = []
         for k in range(num_slot):
             rgb = cmap(torch.tensor([k * color_unit],dtype=torch.float32))[0,0:3]
-            color_code.append(torch.from_numpy(rgb).to(slot.device))
+            color_code.append(torch.from_numpy(rgb).to(mask.device))
         color_code = torch.stack(color_code) # [N_S,3]
         color_code = color_code[:, None, :]
-        slot[..., -3:] = color_code
-        gs = torch.sum(slot * mask, dim=0)
+        return color_code
 
-    recon_combined = renderer.rasterize_gs(gs,Ks,w2cs)
-
-    recon_slots = []
-    for gs,alpha in zip(slot,mask):
-        means, quats, scales, _, colors = torch.split(gs, [3,4,3,1,3], dim=-1)
-        recon_slots.append(renderer.rasterize_gs((means, quats, scales, alpha, colors),Ks,w2cs,alpha=True))
-
-    # slots_alpha = []
-    # mask_slot = torch.cat([slot, mask, mask, mask], dim=-1) # [N_S, G, D+3]
-    # for gs in mask_slot:
-    #     means, quats, scales, opacities, colors, alpha = torch.split(gs, [3,4,3,1,3,3], dim=-1)
-    #     recon_slots.append(renderer.rasterize_gs((means, quats, scales, opacities, colors),Ks,w2cs))
-    #     slots_alpha.append(renderer.rasterize_gs((means, quats, scales, opacities, alpha),Ks,w2cs))
-
-    recon_slots = torch.stack(recon_slots,dim=0)
-    # recon_slots = torch.stack(recon_slots,dim=0)[...,0:3]
-    # slots_alpha = torch.stack(slots_alpha,dim=0)[...,0:1]
-    # recon_slots = torch.cat([recon_slots, slots_alpha], dim=-1)
-
-    return recon_combined, recon_slots
-
-def render_single_vid(renderer:Renderer, gs, slot, mask, Ks:torch.Tensor, w2cs:torch.Tensor, render_rotate=False, color_code=False):
-    '''
-    gs: [1,G,F*7+7]
-    slot: [1,N_S,G,F*7+7]
-    '''
-
-    gs = gs[0]
-    slot = slot[0]
-    mask = mask[0]
-    Ks = Ks[0]
-    w2cs = w2cs[0]
-
-    if render_rotate:
-        Ks, w2cs = renderer.simple_track(Ks, w2cs, renderer.frame_num, 'z')
-    else:
-        Ks = Ks.unsqueeze(0).expand(renderer.frame_num,-1,-1)
-        w2cs = w2cs.unsqueeze(0).expand(renderer.frame_num,-1,-1)
-
-    num_slot = slot.shape[0]
-    color_unit = 1.0 / float(num_slot-1)
-    cmap = plt.get_cmap('inferno')
-    if color_code:
-        color_code = []
-        for k in range(num_slot):
-            rgb = cmap(torch.tensor([k * color_unit],dtype=torch.float32))[0,0:3]
-            color_code.append(torch.from_numpy(rgb).to(slot.device))
-        color_code = torch.stack(color_code) # [N_S,3]
-        color_code = color_code[:, None, :]
-        slot[..., -3:] = color_code
-        gs = torch.sum(slot * mask, dim=0)
+# def render_single(renderer:Renderer, gs, slot, mask, Ks:torch.Tensor, w2cs:torch.Tensor, color_code=False):
+#     gs = gs[0]
+#     slot = slot[0]
+#     mask = mask[0]
+#     Ks = Ks[0]
+#     w2cs = w2cs[0]   
     
-    mask = mask.unsqueeze(0).expand(renderer.frame_num,-1,-1,-1)
+#     num_slot = slot.shape[0]
+#     color_unit = 1.0 / float(num_slot-1)
+#     cmap = plt.get_cmap('hsv')
+#     if color_code:
+#         color_code = []
+#         for k in range(num_slot):
+#             rgb = cmap(torch.tensor([k * color_unit],dtype=torch.float32))[0,0:3]
+#             color_code.append(torch.from_numpy(rgb).to(slot.device))
+#         color_code = torch.stack(color_code) # [N_S,3]
+#         color_code = color_code[:, None, :]
+#         slot[..., -3:] = color_code
+#         gs = torch.sum(slot * mask, dim=0)
 
-    gs_vid = renderer.split_4dgs(gs) # [F,G,D]
-    slot_vid = []
-    for k in slot:
-        slot_vid.append(renderer.split_4dgs(k))
-    slot_vid = torch.stack(slot_vid) # [N_S,F,G,D]
-    slot_vid = slot_vid.permute(1,0,2,3) # [F,N_S,G,D]
+#     recon_combined = renderer.rasterize_gs(gs,Ks,w2cs)
 
-    return render_batch(renderer,gs_vid,slot_vid,mask,Ks,w2cs)   
+#     recon_slots = []
+#     recon_mask = []
+#     for gs,alpha in zip(slot,mask):
+#         means, quats, scales, _, colors = torch.split(gs, [3,4,3,1,3], dim=-1)
+#         recon_slots.append(renderer.rasterize_gs((means, quats, scales, alpha, colors),Ks,w2cs,alpha=True))
+#         recon_mask.append(renderer.rasterize_gs((means, quats, scales, torch.ones_like(alpha), alpha*3),Ks,w2cs,alpha=True)[...,0:1])
+
+#     recon_slots = torch.stack(recon_slots,dim=0)
+#     recon_mask = torch.stack(recon_mask,dim=0)
+    
+#     return recon_combined, recon_slots, recon_mask

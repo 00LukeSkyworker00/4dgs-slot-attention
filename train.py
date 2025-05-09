@@ -104,7 +104,7 @@ def Trainer(rank, world_size, cfg):
     
     # Setup tensorboard and save environment
     if rank == 0:
-        logger = Logger(test_set, len(train_set), len(val_set), cfg, device)
+        logger = Logger(test_set, len(train_sampler), len(val_sampler), cfg, device)
 
     model = SlotAttentionAutoEncoder(cfg.dataset, cfg.cnn, cfg.attention,test_set['gs'].shape[-1])
     model = model.to(device)
@@ -203,7 +203,7 @@ def Trainer(rank, world_size, cfg):
                         pe = sample['pe'].to(device)
 
                         # Forward pass
-                        gs_recon, _, _, loss = model(gs, pe, pad_mask=pad_mask)
+                        gs_recon, _, gs_mask, loss = model(gs, pe, pad_mask=pad_mask)
 
                         # Loss calculation
                         pos_loss = PosLoss([mse_loss], gs, gs_recon, pad_mask)
@@ -215,35 +215,55 @@ def Trainer(rank, world_size, cfg):
                         # loss += mse_loss(gs_recon, gs)
                         loss += pos_loss + color_loss
 
+                        Ks = sample['Ks'].to(device)
+                        w2cs = sample['w2cs'].to(device)
+                        ano = sample['ano']
 
                         if rank == 0:
                             logger.record_loss(loss,pos_loss,color_loss)
+                            logger.record_ari(gs_recon,gs_mask,Ks,w2cs,ano)
 
-                        del gs_recon, loss, pos_loss, color_loss
+                        del gs_recon, gs_mask, loss, pos_loss, color_loss
 
                 if rank == 0:
-                    isBest = logger.plt_loss(epoch,start,mode='Val')
-
+                    best_loss = logger.plt_loss(epoch,start,mode='Val')
+                    best_ari, best_arifg = logger.plt_ari(epoch)
                     logger.plt_render(model, epoch)
 
                     torch.save({
                         'epoch': epoch,  # Save the current epoch
+                        'gs_dim': model.module.gs_dim,
                         'model_state_dict': model.module.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                     }, os.path.join(cfg.output.dir,'checkpoints', f'{epoch}.ckpt'))
 
                     torch.save({
                         'epoch': epoch,  # Save the last epoch for resuming
+                        'gs_dim': model.module.gs_dim,
                         'model_state_dict': model.module.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                     }, checkpoint_path)
-                    
-                    if isBest:
+                    if best_loss:
                         torch.save({
                             'epoch': epoch,  # Save the Best val model
+                            'gs_dim': model.module.gs_dim,
                             'model_state_dict': model.module.state_dict(),
                             'optimizer_state_dict': optimizer.state_dict(),
-                        }, os.path.join(cfg.output.dir,'checkpoints', 'best.ckpt'))
+                        }, os.path.join(cfg.output.dir,'checkpoints', 'best_loss.ckpt'))
+                    if best_ari:
+                        torch.save({
+                            'epoch': epoch,  # Save the Best ARI model
+                            'gs_dim': model.module.gs_dim,
+                            'model_state_dict': model.module.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                        }, os.path.join(cfg.output.dir,'checkpoints', 'best_ari.ckpt'))
+                    if best_arifg:
+                        torch.save({
+                            'epoch': epoch,  # Save the Best ARI-FG model
+                            'gs_dim': model.module.gs_dim,
+                            'model_state_dict': model.module.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                        }, os.path.join(cfg.output.dir,'checkpoints', 'best_arifg.ckpt'))
 
                     print (f"Save checkpoint at epoch {epoch}.")
 
