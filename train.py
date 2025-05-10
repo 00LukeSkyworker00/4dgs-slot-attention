@@ -83,7 +83,7 @@ def Trainer(rank, world_size, cfg):
     val_list = []    
     for i in range(cfg.dataset.val_idx[0], cfg.dataset.val_idx[1] + 1):
         path = os.path.join(cfg.dataset.dir,f'movi_a_{i:04}_anoMask')
-        if not os.path.exists(path):
+        if not os.path.exists(os.path.join(path,'checkpoints')):
             print(f"Path does not exist: {path}")
             continue
         val_set = ShapeOfMotion(path, cfg.dataset)

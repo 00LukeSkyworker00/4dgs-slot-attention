@@ -10,6 +10,8 @@ from sklearn.metrics import adjusted_rand_score
 class Logger():
     def __init__(self, test_set, train_len, val_len, cfg, device):
         self.writer = SummaryWriter(os.path.join(cfg.output.dir, 'logs'))
+        self.render_dir = os.path.join(cfg.output.dir, 'render')
+        os.makedirs(self.render_dir, exist_ok=True)  
 
         self.img = test_set['gt_render'][0]
         self.gs = test_set['gs'][:1].to(device)
@@ -39,22 +41,6 @@ class Logger():
         self.total_loss += total_loss.item()
         self.p_loss += p_loss.item()
         self.c_loss += c_loss.item()
-
-    def record_ari(self, batch_gs, batch_mask, batch_Ks, batch_w2cs, batch_ano):
-        for gs,mask,Ks,w2cs,vid_ano in zip(batch_gs,batch_mask,batch_Ks,batch_w2cs, batch_ano):
-            vid_mask = self.renderer.make_vid_slot(gs, mask, Ks, w2cs, mask_as_color=True)
-            vid_mask = vid_mask[...,0:1].argmax(dim=1).cpu().numpy()
-            
-            for ano,pred in zip(vid_ano,vid_mask):
-                pred_fg = pred[ano != 0]
-                anos_fg = ano[ano != 0]
-                pred = pred.flatten()
-                anos = ano.flatten()
-                ari =adjusted_rand_score(anos,pred)
-                arifg = adjusted_rand_score(anos_fg,pred_fg)
-                self.ari += ari
-                self.ari_fg += arifg
-            self.ari_sample_len += len(vid_mask)
 
     def plt_loss(self, epoch:int, start_time, mode='Train') -> bool:
         assert mode in ['Train', 'Val']
@@ -86,6 +72,22 @@ class Logger():
         self.c_loss = 0
 
         return isBest
+
+    def record_ari(self, batch_gs, batch_mask, batch_Ks, batch_w2cs, batch_ano):
+        for gs,mask,Ks,w2cs,vid_ano in zip(batch_gs,batch_mask,batch_Ks,batch_w2cs, batch_ano):
+            vid_mask = self.renderer.make_vid_slot(gs, mask, Ks, w2cs, mask_as_color=True)
+            vid_mask = vid_mask[...,0:1].argmax(dim=1).cpu().numpy()
+            
+            for ano,pred in zip(vid_ano,vid_mask):
+                pred_fg = pred[ano != 0]
+                anos_fg = ano[ano != 0]
+                pred = pred.flatten()
+                anos = ano.flatten()
+                ari =adjusted_rand_score(anos,pred)
+                arifg = adjusted_rand_score(anos_fg,pred_fg)
+                self.ari += ari
+                self.ari_fg += arifg
+            self.ari_sample_len += len(vid_mask)
     
     def plt_ari(self, epoch) -> tuple[bool,bool]:
 
@@ -111,7 +113,7 @@ class Logger():
         
         return isBestAri, isBestArifg
 
-    def plt_render(self, model, epoch:int):
+    def render_preview(self, model):
         with torch.no_grad():
             model.eval()
             batch_gs, batch_slot, batch_mask, _ = model(self.gs, self.pe,isInference=True)
@@ -128,7 +130,15 @@ class Logger():
             result = torch.stack([self.img,recon_combined,code_combined,ari_vis,arifg_vis.to(ari_vis.device),torch.zeros_like(ari_vis)]).permute(0,1,4,2,3)
             result_slots = torch.cat([recon_slots,code_slot], dim=1).permute(1,0,4,2,3)
             
-            self.writer.add_video('result', result, epoch,fps=10)
-            self.writer.add_video('slots_recon', result_slots, epoch,fps=10)
+            return result, result_slots
 
-            del recon_combined, recon_slots, code_combined, code_slot, batch_gs, batch_slot, batch_mask, result, result_slots
+    def plt_render(self, model, epoch:int):
+        result, result_slots = self.render_preview(model)
+        
+        self.writer.add_video('result', result, epoch,fps=10)
+        self.writer.add_video('slots_recon', result_slots, epoch,fps=10)
+        
+    # def save_render(self, model, epoch:int):
+    #     result, result_slots = self.render_preview(model)
+        
+        

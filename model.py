@@ -133,7 +133,7 @@ class Gs_Encoder(nn.Module):
             nn.ReLU(inplace=True)
         )
         self.share_encoder = nn.Linear(gs_dim + gs_dim + gs_dim, slot_dim)
-        self.embedding = Gs_Embedding(24,slot_dim)
+        self.embedding = Gs_Embedding(72,slot_dim)
 
 
     def forward(self, x, pe) -> torch.Tensor:
@@ -154,7 +154,7 @@ class Gs_Decoder(nn.Module):
         #     nn.Linear(hid_dim,14+1)
         # )
 
-        self.embedding = Gs_Embedding(24,slot_dim)
+        self.embedding = Gs_Embedding(72,slot_dim)
 
         self.shared_mlp = nn.Sequential(
             nn.Linear(slot_dim, hid_dim),
@@ -212,42 +212,42 @@ class Gs_Decoder(nn.Module):
         return pos, color, mask # (B, N_S, G, 3), (B, N_S, G, 3), (B, N_S, G, 1)
         return gs, mask # (B, N_S, G, 14), (B, N_S, G, 1)
 
-class Pos_Decoder(nn.Module):
-    def __init__(self, input_dim, hid_dim):
-        super(Pos_Decoder, self).__init__()
-        self.mlp_head = nn.Sequential(
-            nn.Linear(input_dim, hid_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hid_dim, 3)
-        )
-    def forward(self, x) -> torch.Tensor:
-        pos = self.mlp_head(x)
-        return pos # (B, N_S, G, 3)
+# class Pos_Decoder(nn.Module):
+#     def __init__(self, input_dim, hid_dim):
+#         super(Pos_Decoder, self).__init__()
+#         self.mlp_head = nn.Sequential(
+#             nn.Linear(input_dim, hid_dim),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(hid_dim, 3)
+#         )
+#     def forward(self, x) -> torch.Tensor:
+#         pos = self.mlp_head(x)
+#         return pos # (B, N_S, G, 3)
             
-class Col_Decoder(nn.Module):
-    def __init__(self, input_dim, hid_dim):
-        super(Col_Decoder, self).__init__()
-        self.mlp_head = nn.Sequential(
-            nn.Linear(input_dim, hid_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hid_dim, 3)
-        )
-    def forward(self, x) -> torch.Tensor:
-        color = self.mlp_head(x)
-        return color # (B, N_S, G, 3)
+# class Col_Decoder(nn.Module):
+#     def __init__(self, input_dim, hid_dim):
+#         super(Col_Decoder, self).__init__()
+#         self.mlp_head = nn.Sequential(
+#             nn.Linear(input_dim, hid_dim),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(hid_dim, 3)
+#         )
+#     def forward(self, x) -> torch.Tensor:
+#         color = self.mlp_head(x)
+#         return color # (B, N_S, G, 3)
     
-class Gs_Mask_Decoder(nn.Module):
-    def __init__(self, input_dim, hid_dim):
-        super(Gs_Mask_Decoder, self).__init__()
-        self.mask_head = nn.Sequential(
-            nn.Linear(input_dim, hid_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hid_dim, 1)
-        )
+# class Gs_Mask_Decoder(nn.Module):
+#     def __init__(self, input_dim, hid_dim):
+#         super(Gs_Mask_Decoder, self).__init__()
+#         self.mask_head = nn.Sequential(
+#             nn.Linear(input_dim, hid_dim),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(hid_dim, 1)
+#         )
 
-    def forward(self, x) -> torch.Tensor:
-        mask = self.mask_head(x)
-        return mask # (B, N_S, G, 1)
+#     def forward(self, x) -> torch.Tensor:
+#         mask = self.mask_head(x)
+#         return mask # (B, N_S, G, 1)
 
 class SlotAttentionAutoEncoder(nn.Module):
     # def __init__(self, resolution, num_slots, num_iters, hid_dim):

@@ -169,8 +169,9 @@ def collate_fn_padd(batch):
         mask[i, :seq_len] = 1
 
     # Get ever N frame's pos for pe
-    pe = gs[0].view(B,G,-1,3)
-    pe = pe[...,::4].reshape(B, G, -1)
+    pe = gs[0]
+    # pe = gs[0].view(B,G,-1,3)
+    # pe = pe[...,::2].reshape(B, G, -1)
 
     gs = torch.cat(gs,dim=-1)
 
