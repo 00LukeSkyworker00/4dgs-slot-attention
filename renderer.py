@@ -24,10 +24,10 @@ class Renderer():
         for i in range(frame):
             means = gs_4d[0][:,3*i:3*i+3]
             quats = gs_4d[1][:,4*i:4*i+4]
-            render = self.rasterize_gs((means,quats,scales,opacities,colors), Ks, w2cs,w,h,alpha)
+            render = self.rasterize_gs((means,quats,scales,opacities,colors), Ks[i], w2cs[i],w,h,alpha)
             rendered_vid.append(render)
         rendered_vid = torch.stack(rendered_vid)
-        return rendered_vid       
+        return rendered_vid
 
     def split_4dgs(self, gs_4d:torch.Tensor):
         assert len(gs_4d.shape) == 2
@@ -126,7 +126,7 @@ class Renderer():
 
         return Ks, w2cs        
         
-    def generate_combined(self, batch_gs, batch_Ks, batch_w2cs):
+    def generate_combined(self, batch_gs, batch_Ks, batch_w2cs) -> torch.Tensor:
         recon_combined = []
         for gs,ks,w2cs in zip(batch_gs,batch_Ks,batch_w2cs):
             gs = tuple(torch.split(gs, [3,4,3,1,3], dim=-1))
@@ -135,7 +135,7 @@ class Renderer():
 
         return recon_combined
 
-    def generate_slot(self, batch_slots, batch_mask, batch_Ks, batch_w2cs, mask_as_color=False):
+    def generate_slot(self, batch_slots, batch_mask, batch_Ks, batch_w2cs, mask_as_color=False) -> torch.Tensor:
         recon_slots = []
         for slots,mask,ks,w2cs in zip(batch_slots,batch_mask,batch_Ks,batch_w2cs):
             render_slots = []
@@ -150,84 +150,77 @@ class Renderer():
 
         return recon_slots
     
-    def make_vid(self, gs, slot, mask, Ks, w2cs, render_rotate=False, color_code=False):
+    def make_vid(self, gs, slot, mask, Ks, w2cs, render_rotate=False, color_code=False) -> tuple[torch.Tensor,torch.Tensor]:
         out_combined = self.make_vid_combined(gs, mask, Ks, w2cs, render_rotate, color_code)
-        out_slot = self.make_vid_slot(self, slot, mask, Ks, w2cs, render_rotate, color_code, mask_as_color=False)
+        out_slot = self.make_vid_slot(slot, mask, Ks, w2cs, render_rotate, color_code, mask_as_color=False)
         # out_mask = self.make_vid_slot(self, slot, mask, Ks, w2cs, render_rotate, color_code, mask_as_color=True)
         return out_combined, out_slot
 
-    def make_vid_combined(self, gs, mask, Ks:torch.Tensor, w2cs:torch.Tensor, render_rotate=False, color_code=False):
+    def make_vid_combined(self, gs, mask, Ks:torch.Tensor, w2cs:torch.Tensor, render_rotate=False, color_code=False) -> torch.Tensor:
         '''
         gs: [1,G,F*7+7]
         mask: [1,N_S,G,1]
         '''
-        gs = gs[0]
-        mask = mask[0]
-        Ks = Ks[0]
-        w2cs = w2cs[0]
 
         if render_rotate:
             Ks, w2cs = self.simple_track(Ks, w2cs, self.frame_num, 'z')
         else:
-            Ks = Ks.unsqueeze(0).expand(self.frame_num,-1,-1)
-            w2cs = w2cs.unsqueeze(0).expand(self.frame_num,-1,-1)
+            if len(Ks.shape) == 2:
+                Ks = Ks.unsqueeze(0).expand(self.frame_num,-1,-1)
+            if len(w2cs.shape) == 2:
+                w2cs = w2cs.unsqueeze(0).expand(self.frame_num,-1,-1)
         
         if color_code:
-            cmap = self.cmap_mask(mask) # [N_S,1,3]
-            cmap_combined = torch.sum(cmap * mask, dim=0) # [G,3]
+            cmap = self.create_cmap(mask.shape[0],mask.device) # [N_S,3]
+            cmap_slot = cmap.unsqueeze(1) * mask # [N_S,1,3] * [N_S,G,1] -> [N_S,G,3]
+            cmap_combined = torch.sum(cmap_slot, dim=0) # [G,3]
             gs[...,-3:] = cmap_combined
 
         mask = mask.unsqueeze(0).expand(self.frame_num,-1,-1,-1)
         gs_vid = self.split_4dgs(gs) # [F,G,D]
 
-        return self.generate_combined(self,gs_vid,mask,Ks,w2cs)
+        return self.generate_combined(gs_vid,Ks,w2cs)
 
-    def make_vid_slot(self, slot, mask, Ks:torch.Tensor, w2cs:torch.Tensor, render_rotate=False, color_code=False, mask_as_color=False):
+    def make_vid_slot(self, slot, mask, Ks:torch.Tensor, w2cs:torch.Tensor, render_rotate=False, color_code=False, mask_as_color=False) -> torch.Tensor:
         '''
-        gs: [1,G,F*7+7]
-        slot: [1,N_S,G,F*7+7]
-        mask: [1,N_S,G,1]
+        gs: [G,F*7+7]
+        slot: [N_S,G,F*7+7]
+        mask: [N_S,G,1]
         '''
-        slot = slot[0]
-        mask = mask[0]
-        Ks = Ks[0]
-        w2cs = w2cs[0]
-        
         if len(slot.shape) == 2:
             slot = slot.unsqueeze(0).repeat(mask.shape[0],1,1)
 
         if render_rotate:
             Ks, w2cs = self.simple_track(Ks, w2cs, self.frame_num, 'z')
         else:
-            Ks = Ks.unsqueeze(0).expand(self.frame_num,-1,-1)
-            w2cs = w2cs.unsqueeze(0).expand(self.frame_num,-1,-1)
+            if len(Ks.shape) == 2:
+                Ks = Ks.unsqueeze(0).expand(self.frame_num,-1,-1)
+            if len(w2cs.shape) == 2:
+                w2cs = w2cs.unsqueeze(0).expand(self.frame_num,-1,-1)
         
         if not mask_as_color and color_code:
-            cmap = self.cmap_mask(mask) # [N_S,1,3]
-            cmap_slot = cmap * mask # [N_S,G,3]
+            cmap = self.create_cmap(mask.shape[0],mask.device) # [N_S,3]
+            cmap_slot = cmap.unsqueeze(1) * mask # [N_S,1,3] * [N_S,G,1] -> [N_S,G,3]
             slot[...,-3:] = cmap_slot
         
         mask = mask.unsqueeze(0).expand(self.frame_num,-1,-1,-1)
-
         slot_vid = []
         for k in slot:
             slot_vid.append(self.split_4dgs(k))
         slot_vid = torch.stack(slot_vid) # [N_S,F,G,D]
         slot_vid = slot_vid.permute(1,0,2,3) # [F,N_S,G,D]
 
-        return self.generate_slot(self,slot_vid,mask,Ks,w2cs,mask_as_color=mask_as_color)
+        return self.generate_slot(slot_vid,mask,Ks,w2cs,mask_as_color)
 
 
-    def cmap_mask(mask):
-        num_slot = mask.shape[0]
+    def create_cmap(self,num_slot,device):
         color_unit = 1.0 / float(num_slot-1)
         cmap = plt.get_cmap('hsv')
         color_code = []
         for k in range(num_slot):
             rgb = cmap(torch.tensor([k * color_unit],dtype=torch.float32))[0,0:3]
-            color_code.append(torch.from_numpy(rgb).to(mask.device))
+            color_code.append(torch.from_numpy(rgb).to(device))
         color_code = torch.stack(color_code) # [N_S,3]
-        color_code = color_code[:, None, :]
         return color_code
 
 # def render_single(renderer:Renderer, gs, slot, mask, Ks:torch.Tensor, w2cs:torch.Tensor, color_code=False):

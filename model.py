@@ -126,15 +126,13 @@ class Gs_Encoder(nn.Module):
         self.col_dim = col_dim
         self.pos_encoder = nn.Sequential(
             nn.Linear(pos_dim, gs_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(gs_dim, pos_dim)
+            nn.ReLU(inplace=True)
         )
         self.col_encoder = nn.Sequential(
             nn.Linear(col_dim, gs_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(gs_dim, col_dim)
+            nn.ReLU(inplace=True)
         )
-        self.share_encoder = nn.Linear(gs_dim + pos_dim + col_dim, slot_dim)
+        self.share_encoder = nn.Linear(gs_dim + gs_dim + gs_dim, slot_dim)
         self.embedding = Gs_Embedding(24,slot_dim)
 
 
@@ -278,7 +276,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         
         self.decoder = Gs_Decoder(slot_dim, 64, self.frame_num)
 
-    def forward(self, gs:torch.Tensor, pe:torch.Tensor, pad_mask=None):
+    def forward(self, gs:torch.Tensor, pe:torch.Tensor, pad_mask=None, isInference=False):
         """
         gs: [B, G, D]
         pos: [B, G, 3]
@@ -307,9 +305,12 @@ class SlotAttentionAutoEncoder(nn.Module):
         gs_mask = self.apply_mask(gs_mask, pad_mask, -1e9)
         gs_mask = F.softmax(gs_mask, dim=1)
 
-        # Duplicate gs to match slots count and inject prediction
-        gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, D]
-        gs_slot = torch.cat([pos, gs_slot[...,self.frame_num*3:-3], color], dim=-1) # [B, N_S, G, D]
+        if isInference:
+            # Duplicate gs to match slots count and inject prediction
+            gs_slot = gs.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, D]
+            gs_slot = torch.cat([pos, gs_slot[...,self.frame_num*3:-3], color], dim=-1) # [B, N_S, G, D]
+        else:
+            gs_slot = torch.cat([pos, color], dim=-1) # [B, N_S, G, D]
 
         # Recconstruct gs
         gs_out = torch.sum(gs_slot * gs_mask, dim=1)
@@ -340,6 +341,6 @@ class RasterizedSlotAttentionAutoEncoder(nn.Module):
 
     def forward(self, gs:torch.Tensor, pe:torch.Tensor, Ks: torch.Tensor, w2cs: torch.Tensor, pad_mask=None):
         gs_out, gs_slot, gs_mask, loss = self.model(gs,pe,pad_mask)
-        recon_combined, recon_slots, recon_mask = render_batch(self.renderer, gs_out, gs_slot, gs_mask, Ks, w2cs)
+        recon_combined, recon_slots = self.renderer.make_vid(gs_out, gs_slot, gs_mask, Ks, w2cs)
 
-        return recon_combined, recon_slots, recon_mask, loss
+        return recon_combined, recon_slots, loss

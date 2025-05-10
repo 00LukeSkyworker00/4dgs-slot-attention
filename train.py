@@ -94,7 +94,7 @@ def Trainer(rank, world_size, cfg):
     val_sampler = DistributedSampler(val_set, num_replicas=world_size, rank=rank,
         seed=cfg.training.seed)
     val_dataloader = torch.utils.data.DataLoader(
-        val_set, batch_size=cfg.training.batch_size, num_workers=0,
+        val_set, batch_size=int(cfg.training.batch_size/2), num_workers=0,
         sampler=val_sampler, collate_fn=collate_fn_padd
         )
     
@@ -140,6 +140,7 @@ def Trainer(rank, world_size, cfg):
     try:
         for epoch in range(start_epoch, cfg.training.epochs + 1):  # Resume from the saved epoch
             print (f"Start epoch {epoch} of {cfg.training.epochs}")
+            torch.cuda.empty_cache()
             """
             Train Loop
             """
@@ -157,10 +158,7 @@ def Trainer(rank, world_size, cfg):
                 learning_rate *= world_size ** 0.5                
                 optimizer.param_groups[0]['lr'] = learning_rate
                 
-                # print(sample['gt_imgs'].shape)
-
                 # Get inputs and lengths
-                # gt_imgs = sample['gt_imgs'].to(device)
                 gs = sample['gs'].to(device)
                 pad_mask = sample['mask'].to(device)
                 pe = sample['pe'].to(device)
@@ -197,13 +195,12 @@ def Trainer(rank, world_size, cfg):
                     model.eval()
                     for sample in tqdm(val_dataloader):
                         # Get data from set
-                        # imgs = sample['gt_imgs'].to(device)
                         gs = sample['gs'].to(device)
                         pad_mask = sample['mask'].to(device)
                         pe = sample['pe'].to(device)
 
                         # Forward pass
-                        gs_recon, _, gs_mask, loss = model(gs, pe, pad_mask=pad_mask)
+                        gs_recon, _, gs_mask, loss = model(gs, pe, pad_mask=pad_mask,isInference=True)
 
                         # Loss calculation
                         pos_loss = PosLoss([mse_loss], gs, gs_recon, pad_mask)

@@ -48,6 +48,10 @@ class ShapeOfMotion(Dataset):
             self.imgs[index] = self.load_image(index)
         img = cast(torch.Tensor, self.imgs[index])
         return img
+    
+    def get_video(self) -> torch.Tensor:
+        vid = [self.get_image(torch.tensor([t])) for t in range(self.num_frame)]
+        return torch.stack(vid)
         
     def get_fg_4dgs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         means, quats, scales, opacities, colors = self.load_3dgs('fg')
@@ -128,13 +132,13 @@ class ShapeOfMotion(Dataset):
         coefs = self.motion_coef_activation(coefs)
         return transls, rots, coefs
     
-    def __getitem__(self, index: int):
+    def __getitem__(self, index):
         gs = self.get_all_4dgs()
-        Ks: torch.Tensor = self.ckpt["model"]["Ks"][index].float()
-        w2cs: torch.Tensor = self.ckpt["model"]["w2cs"][index]
+        Ks: torch.Tensor = self.ckpt["model"]["Ks"].float()
+        w2cs: torch.Tensor = self.ckpt["model"]["w2cs"]
         data = {
-            # "gt_imgs": self.get_image(index),
-            "gt_imgs": self.renderer.rasterize_4dgs(gs, Ks, w2cs),
+            # "gt_vid": self.get_video(),
+            "gt_render": self.renderer.rasterize_4dgs(gs, Ks, w2cs),
             "gs": gs,
             "Ks": Ks,
             "w2cs": w2cs,
@@ -144,7 +148,8 @@ class ShapeOfMotion(Dataset):
     
 
 def collate_fn_padd(batch):
-    gt_imgs = torch.stack([t['gt_imgs'] for t in batch])
+    # gt_vid = torch.stack([t['gt_vid'] for t in batch])
+    gt_render = torch.stack([t['gt_render'] for t in batch])
     Ks = torch.stack([t['Ks'] for t in batch])
     w2cs = torch.stack([t['w2cs'] for t in batch])
     ano = np.stack([t['ano'] for t in batch])
@@ -170,7 +175,8 @@ def collate_fn_padd(batch):
     gs = torch.cat(gs,dim=-1)
 
     out = {
-        "gt_imgs": gt_imgs,
+        # "gt_vid": gt_vid,
+        "gt_render": gt_render,
         "gs": gs,
         "mask": mask,
         "pe": pe,

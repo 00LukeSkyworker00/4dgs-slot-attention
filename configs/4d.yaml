@@ -17,7 +17,7 @@ output:
   
 training:
   seed: 0
-  batch_size: 10
+  batch_size: 8
   epochs: 2000
   num_workers: 8
   lr: 0.0004

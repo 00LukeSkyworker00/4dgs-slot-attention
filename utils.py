@@ -11,11 +11,12 @@ class Logger():
     def __init__(self, test_set, train_len, val_len, cfg, device):
         self.writer = SummaryWriter(os.path.join(cfg.output.dir, 'logs'))
 
-        self.img = test_set['gt_imgs'][0]
+        self.img = test_set['gt_render'][0]
         self.gs = test_set['gs'][:1].to(device)
         self.pe = test_set['pe'][:1].to(device)
-        self.Ks = test_set['Ks'][:1]
-        self.w2cs = test_set['w2cs'][:1]
+        self.Ks = test_set['Ks'][0]
+        self.w2cs = test_set['w2cs'][0]
+        self.vid_ano = test_set['ano'][0]
 
         self.renderer = Renderer(tuple(cfg.dataset.resolution), self.img.shape[0], requires_grad=False)
 
@@ -42,16 +43,18 @@ class Logger():
     def record_ari(self, batch_gs, batch_mask, batch_Ks, batch_w2cs, batch_ano):
         for gs,mask,Ks,w2cs,vid_ano in zip(batch_gs,batch_mask,batch_Ks,batch_w2cs, batch_ano):
             vid_mask = self.renderer.make_vid_slot(gs, mask, Ks, w2cs, mask_as_color=True)
-            vid_mask = vid_mask.argmax(dim=1).cpu().numpy()
+            vid_mask = vid_mask[...,0:1].argmax(dim=1).cpu().numpy()
             
             for ano,pred in zip(vid_ano,vid_mask):
-                pred_fg = pred[ano != 0].flatten()
-                anos_fg = ano[ano != 0].squeeze(-1).flatten()
+                pred_fg = pred[ano != 0]
+                anos_fg = ano[ano != 0]
                 pred = pred.flatten()
-                anos = ano.squeeze(-1).flatten()
-                self.ari += adjusted_rand_score(anos,pred)
-                self.ari_fg += adjusted_rand_score(anos_fg,pred_fg)
-            self.ari_sample_len += len(vid_mask)        
+                anos = ano.flatten()
+                ari =adjusted_rand_score(anos,pred)
+                arifg = adjusted_rand_score(anos_fg,pred_fg)
+                self.ari += ari
+                self.ari_fg += arifg
+            self.ari_sample_len += len(vid_mask)
 
     def plt_loss(self, epoch:int, start_time, mode='Train') -> bool:
         assert mode in ['Train', 'Val']
@@ -109,14 +112,23 @@ class Logger():
         return isBestAri, isBestArifg
 
     def plt_render(self, model, epoch:int):
-        gs_out, gs_slot, gs_mask, _ = model(self.gs, self.pe)
-        recon_combined, recon_slots = self.renderer.make_vid(gs_out, gs_slot, gs_mask, self.Ks, self.w2cs)
-        code_combined, code_slot = self.renderer.make_vid(self.gs, self.gs, gs_mask, self.Ks, self.w2cs, color_code=True)
+        with torch.no_grad():
+            model.eval()
+            batch_gs, batch_slot, batch_mask, _ = model(self.gs, self.pe,isInference=True)
 
-        result = torch.stack([self.img,recon_combined,code_combined]).permute(0,1,4,2,3)
-        result_slots = torch.cat([recon_slots,code_slot], dim=1).permute(1,0,4,2,3)
-        
-        self.writer.add_video('result', result, epoch,fps=10)
-        self.writer.add_video('slots_recon', result_slots, epoch,fps=10)
+            vid_mask = self.renderer.make_vid_slot(self.gs[0], batch_mask[0], self.Ks, self.w2cs, mask_as_color=True)  # [F, N_S, 128, 128, 3]
+            cmap = self.renderer.create_cmap(vid_mask.shape[1], vid_mask.device)  # [N_S, 3]
+            vid_mask = vid_mask.argmax(dim=1).squeeze(-1) # [F, 128, 128]
+            ari_vis = cmap[vid_mask] # [F, 128, 128, 3]
+            arifg_vis = ari_vis.cpu() * (self.vid_ano != 0) # [F, 128, 128, 3]
 
-        del recon_combined, recon_slots, code_combined, code_slot, gs_out, gs_slot, gs_mask
+            recon_combined, recon_slots = self.renderer.make_vid(batch_gs[0], batch_slot[0], batch_mask[0], self.Ks, self.w2cs)
+            code_combined, code_slot = self.renderer.make_vid(self.gs[0], self.gs[0], batch_mask[0], self.Ks, self.w2cs, color_code=True)
+
+            result = torch.stack([self.img,recon_combined,code_combined,ari_vis,arifg_vis.to(ari_vis.device),torch.zeros_like(ari_vis)]).permute(0,1,4,2,3)
+            result_slots = torch.cat([recon_slots,code_slot], dim=1).permute(1,0,4,2,3)
+            
+            self.writer.add_video('result', result, epoch,fps=10)
+            self.writer.add_video('slots_recon', result_slots, epoch,fps=10)
+
+            del recon_combined, recon_slots, code_combined, code_slot, batch_gs, batch_slot, batch_mask, result, result_slots
