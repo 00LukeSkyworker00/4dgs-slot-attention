@@ -142,7 +142,8 @@ class Renderer():
             for gs,alpha in zip(slots,mask):
                 means, quats, scales, _, colors = torch.split(gs, [3,4,3,1,3], dim=-1)
                 if mask_as_color:
-                    render_slots.append(self.rasterize_gs((means, quats, scales, torch.ones_like(alpha), alpha*3),ks,w2cs,alpha=True)[...,0:1])
+                    opacity = torch.ones_like(alpha)
+                    render_slots.append(self.rasterize_gs((means, quats, scales, opacity, alpha*3),ks,w2cs,alpha=True)[...,0:1])
                 else:  
                     render_slots.append(self.rasterize_gs((means, quats, scales, alpha, colors),ks,w2cs,alpha=True))
             recon_slots.append(torch.stack(render_slots,dim=0))

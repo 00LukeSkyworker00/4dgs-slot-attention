@@ -1,6 +1,6 @@
 #!/bin/bash
 
-NAME=movi_a_test_05_10_temporal_test_full_pe_600set
+NAME=movi_a_test_05_11_temporal_obj_mean_rot_decoder_single_pe
 DATA_DIR=/home/skyworker/result/4DGS_SlotAttention/shape_of_motion
 OUT_DIR=/home/skyworker/result/4DGS_SlotAttention/slot_4dgs
 

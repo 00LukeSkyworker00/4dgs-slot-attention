@@ -2,18 +2,21 @@ import torch
 import torch.nn.functional as F
 
 
-def rt_to_mat4(
+def rot_to_mat4(
     R: torch.Tensor, t: torch.Tensor, s: torch.Tensor | None = None
 ) -> torch.Tensor:
     """
     Args:
-        R (torch.Tensor): (..., 3, 3).
+        R (torch.Tensor): (..., 3, 3) or (..., 4).
         t (torch.Tensor): (..., 3).
         s (torch.Tensor): (...,).
 
     Returns:
         torch.Tensor: (..., 4, 4)
     """
+    if R.shape[-1] == 6:
+        R = cont_6d_to_rmat(R)
+
     mat34 = torch.cat([R, t[..., None]], dim=-1)
     if s is None:
         bottom = (
@@ -26,6 +29,9 @@ def rt_to_mat4(
     mat4 = torch.cat([mat34, bottom], dim=-2)
     return mat4
 
+def to_homogeneous(x: torch.Tensor) -> torch.Tensor:
+    ones = torch.ones_like(x[..., :1])  # same shape as [..., 1]
+    return torch.cat([x, ones], dim=-1).unsqueeze(-1)  # [..., 4, 1]
 
 def rmat_to_cont_6d(matrix):
     """

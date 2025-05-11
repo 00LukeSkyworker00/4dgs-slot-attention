@@ -15,6 +15,7 @@ import torch
 from omegaconf import OmegaConf
 
 import torch.multiprocessing as mp
+import torch.distributed as dist
 from torch.utils.data import ConcatDataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -47,6 +48,11 @@ def ColorLoss(loss_fn, gt, pred, pad_mask):
         loss += fn(gt,pred)
     return loss
 
+def reduce_loss(loss_tensor):
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+        loss_tensor /= dist.get_world_size()
+    return loss_tensor
 
 def Trainer(rank, world_size, cfg):
 
@@ -103,8 +109,8 @@ def Trainer(rank, world_size, cfg):
     test_set = collate_fn_padd([train_set[0]])
     
     # Setup tensorboard and save environment
-    if rank == 0:
-        logger = Logger(test_set, len(train_sampler), len(val_sampler), cfg, device)
+    if rank == (world_size-1):
+        logger = Logger(test_set, cfg, device)
 
     model = SlotAttentionAutoEncoder(cfg.dataset, cfg.cnn, cfg.attention,test_set['gs'].shape[-1])
     model = model.to(device)
@@ -173,7 +179,7 @@ def Trainer(rank, world_size, cfg):
                 # loss += mse_loss(gs_recon, gs)
                 loss += pos_loss + color_loss
 
-                if rank == 0:
+                if rank == (world_size-1):
                     logger.record_loss(loss,pos_loss,color_loss)
 
                 # Backward pass and optimizer step
@@ -183,7 +189,7 @@ def Trainer(rank, world_size, cfg):
             
                 del gs_recon, loss, pos_loss, color_loss
 
-            if rank == 0:
+            if rank == (world_size-1):
                 logger.plt_loss(epoch,start,mode='Train')
 
             """
@@ -212,17 +218,22 @@ def Trainer(rank, world_size, cfg):
                         # loss += mse_loss(gs_recon, gs)
                         loss += pos_loss + color_loss
 
+                        # Sync losses across all ranks
+                        loss = reduce_loss(loss)
+                        pos_loss = reduce_loss(pos_loss)
+                        color_loss = reduce_loss(color_loss)
+
                         Ks = sample['Ks'].to(device)
                         w2cs = sample['w2cs'].to(device)
                         ano = sample['ano']
 
-                        if rank == 0:
+                        if rank == (world_size-1):
                             logger.record_loss(loss,pos_loss,color_loss)
                             logger.record_ari(gs_recon,gs_mask,Ks,w2cs,ano)
 
                         del gs_recon, gs_mask, loss, pos_loss, color_loss
 
-                if rank == 0:
+                if rank == (world_size-1):
                     best_loss = logger.plt_loss(epoch,start,mode='Val')
                     best_ari, best_arifg = logger.plt_ari(epoch)
                     logger.plt_render(model, epoch)

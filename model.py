@@ -2,6 +2,7 @@ from torch import nn
 import torch
 import torch.nn.functional as F
 from renderer import *
+from transforms import rot_to_mat4, to_homogeneous
 
 class SlotAttention(nn.Module):
     def __init__(self, num_slots, slot_dim, iters = 3, eps = 1e-8, hidden_dim = 128):
@@ -67,7 +68,7 @@ class Gs_Embedding(nn.Module):
         super().__init__()
         self.use_fourier = use_fourier
         if use_fourier:
-            self.embedding = FourierEmbedding(pos_dim, 6, include_input=False)
+            self.embedding = FourierEmbedding(pos_dim, 3, include_input=False)
             self._out_dim = feature_dim + self.embedding.out_dim
         else:
             self.embedding = nn.Linear(pos_dim, feature_dim)
@@ -78,10 +79,6 @@ class Gs_Embedding(nn.Module):
         return self._out_dim
 
     def forward(self, input, pos):
-        # pos_min = pos.amin(dim=-2, keepdim=True).detach()
-        # pos_max = pos.amax(dim=-2, keepdim=True).detach()
-        # pos_norm = (pos.detach() - pos_min) / (pos_max - pos_min)
-        # pe = self.embedding(pos_norm)
         pe:torch.Tensor = self.embedding(pos)
         if self.use_fourier:
             return torch.cat([input, pe], dim=-1)
@@ -124,130 +121,132 @@ class Gs_Encoder(nn.Module):
         super(Gs_Encoder, self).__init__()
         self.pos_dim = pos_dim
         self.col_dim = col_dim
-        self.pos_encoder = nn.Sequential(
-            nn.Linear(pos_dim, gs_dim),
-            nn.ReLU(inplace=True)
+        # self.pos_encoder = nn.Sequential(
+        #     nn.Linear(pos_dim, gs_dim),
+        #     nn.ReLU(inplace=True)
+        # )
+        # self.col_encoder = nn.Sequential(
+        #     nn.Linear(col_dim, gs_dim),
+        #     nn.ReLU(inplace=True)
+        # )
+        # self.share_encoder = nn.Linear(gs_dim + gs_dim + gs_dim, slot_dim)
+        self.encoder = nn.Sequential(
+            nn.Linear(gs_dim, slot_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(slot_dim, slot_dim),
         )
-        self.col_encoder = nn.Sequential(
-            nn.Linear(col_dim, gs_dim),
-            nn.ReLU(inplace=True)
-        )
-        self.share_encoder = nn.Linear(gs_dim + gs_dim + gs_dim, slot_dim)
-        self.embedding = Gs_Embedding(72,slot_dim)
+        self.embedding = Gs_Embedding(3,slot_dim)
 
 
     def forward(self, x, pe) -> torch.Tensor:
-        pos = self.pos_encoder(x[...,:self.pos_dim])
-        col = self.col_encoder(x[...,-self.col_dim:])
-        share = self.share_encoder(torch.cat([pos,x,col],dim=-1))
+        # pos = self.pos_encoder(x[...,:self.pos_dim])
+        # col = self.col_encoder(x[...,-self.col_dim:])
+        # share = self.share_encoder(torch.cat([pos,x,col],dim=-1))
+
+        share = self.encoder(x)
         out =  self.embedding(share,pe)
-        return out # (B, N_S, G)
+        return out # (B, N_S, G, D)
     
+class Object_Decoder(nn.Module):
+    def __init__(self, gs_dim, slot_dim, hid_dim, frame_num):
+        super(Object_Decoder, self).__init__()
 
-class Gs_Decoder(nn.Module):
-    def __init__(self, slot_dim, hid_dim, frame_num):
-        super(Gs_Decoder, self).__init__()
-
-        # self.mlp_head = nn.Sequential(
-        #     nn.Linear(slot_dim, hid_dim),
-        #     nn.ReLU(inplace=True),
-        #     nn.Linear(hid_dim,14+1)
-        # )
-
-        self.embedding = Gs_Embedding(72,slot_dim)
+        self.frame_num = frame_num
 
         self.shared_mlp = nn.Sequential(
-            nn.Linear(slot_dim, hid_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hid_dim, hid_dim),
+            nn.Linear(slot_dim, slot_dim),
             nn.ReLU(inplace=True),
         )
 
-        self.pos_head = nn.Sequential(
-            nn.Linear(hid_dim, hid_dim*2),
+        self.track_head = nn.Sequential(
+            nn.Linear(slot_dim, slot_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(hid_dim*2, frame_num*3),
+            nn.Linear(slot_dim, frame_num*9),
         )
         self.col_head = nn.Sequential(
-            nn.Linear(hid_dim, hid_dim),
+            nn.Linear(slot_dim, gs_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(gs_dim, 3),
+        )
+
+    def forward(self, x) -> torch.Tensor:
+        '''
+        x: [B,N_S,D]
+        pe: [B,N_S,3]
+        '''
+        B,N_S,_ = x.shape
+        # Shared mlp for pos col mask
+        out = self.shared_mlp(x)
+        track = self.track_head(out)
+        track = track.view(B, N_S, self.frame_num, 9).unsqueeze(-2) # [B, N_S, FRAME, 1, 9]
+        color = self.col_head(out).unsqueeze(-2) # [B, N_S, 1, 3]
+
+        return track, color, out # [B, N_S, FRAME, 1, 9], [B, N_S, 1, 3], [B, N_S, gs_dim]
+
+class Gs_Decoder(nn.Module):
+    def __init__(self, gs_dim, slot_dim, hid_dim, frame_num):
+        super(Gs_Decoder, self).__init__()
+
+        self.embedding = Gs_Embedding(3,slot_dim)
+        self.frame_num = frame_num
+
+        # self.shared_mlp = nn.Sequential(
+        #     nn.Linear(slot_dim, gs_dim),
+        #     nn.ReLU(inplace=True),
+        # )
+
+        self.pos_head = nn.Sequential(
+            nn.Linear(slot_dim, hid_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hid_dim, 3),
+            # nn.Linear(hid_dim, 12),
+        )
+        self.col_head = nn.Sequential(
+            nn.Linear(slot_dim, gs_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(gs_dim, 3),
         )
         self.mask_head = nn.Sequential(
-            nn.Linear(hid_dim, hid_dim),
+            nn.Linear(slot_dim, hid_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hid_dim, 1),
         )
 
-        # self.pcm_head = TriPlane_Decoder(slot_dim, hid_dim, 1+3+1)
-
-        # self.pos_head = Pos_Decoder(slot_dim, hid_dim)
-        # self.col_head = Col_Decoder(slot_dim, hid_dim)
-        # self.mask_head = Gs_Mask_Decoder(slot_dim, hid_dim)
-
-    def forward(self, x, pe) -> torch.Tensor:
-
-        # # Shared mlp
-        # gs = self.mlp_head(x)
-        # gs, mask = torch.split(gs, [14,1], dim=-1)
-
+    def forward(self, x, pe, obj_track, obj_color) -> torch.Tensor:
+        '''
+        x: [B,N_S,G,D]
+        pe: [B,N_S,G,3]
+        obj_track: [B, N_S, FRAME, 1, 3, 1]
+        obj_color: [B,N_S,1,3]
+        '''
+        B,N_S,G,_ = x.shape
+        
         # Shared mlp for pos col mask
-        x_pe = self.embedding(x, pe)
-        out = self.shared_mlp(x_pe)
-        pos = self.pos_head(out)
-        color = self.col_head(out)
+        out = self.embedding(x, pe)
+        # out = self.shared_mlp(x_pe)
         mask = self.mask_head(out)
 
-        # # Triplane decoder
-        # x_out, y_out, z_out = self.pcm_head(x, pos)
-        # pos = torch.cat([x_out[...,0:1],y_out[...,0:1],z_out[...,0:1]], dim=-1)
-        # out = x_out[...,1:5] + y_out[...,1:5] + z_out[...,1:5]
-        # color, mask = torch.split(out, [3,1], dim=-1)
+        local_pos = self.pos_head(out)
+        local_pos = local_pos.unsqueeze(-3) # [B, N_S, 1, G, 3]
+        local_pos = to_homogeneous(local_pos) # [B, N_S, 1, G, 4, 1]
+        obj_mean, obj_rot_6d = torch.split(obj_track,(3,6),dim=-1) # [B, N_S, FRAME, 1, 3], [B, N_S, FRAME, 1, 6]
+        obj_rotmat = rot_to_mat4(obj_rot_6d, obj_mean) # [B, N_S, FRAME, 1, 4, 4]
+        pos = torch.matmul(obj_rotmat, local_pos).squeeze(-1) # [B, N_S, FRAME, G, 4]
+        pos = pos[...,:3].permute(0, 1, 3, 2, 4).reshape(B, N_S, G, self.frame_num * 3) #[B, N_S, G, FRAME*3]
 
-        # x_embed = self.embedding(x, pos)
-        # pos = self.pos_head(x, pos)
-        # color = self.col_head(x_embed)
-        # mask = self.mask_head(x_embed)
+        # local_transfm = self.transform_head(out)
+        # local_pos, local_rot = torch.split(local_transfm,(3,9),dim=-1)
+        # local_pos = local_pos.unsqueeze(-3) # [B, N_S, 1, G, 3]
+        # local_rot = local_rot.view(B, N_S, G, 3, 3).unsqueeze(-4) # [B, N_S, 1, G, 3, 3]
 
-        return pos, color, mask # (B, N_S, G, 3), (B, N_S, G, 3), (B, N_S, G, 1)
-        return gs, mask # (B, N_S, G, 14), (B, N_S, G, 1)
+        # rot_track = local_rot @ obj_track # [B, N_S, FRAME, G, 3, 1]
+        # pos = rot_track.squeeze(-1) + local_pos # [B, N_S, FRAME, G, 3]
+        # pos = pos.permute(0, 1, 3, 2, 4).reshape(B, N_S, G, self.frame_num * 3) #[B, N_S, G, FRAME*3]
 
-# class Pos_Decoder(nn.Module):
-#     def __init__(self, input_dim, hid_dim):
-#         super(Pos_Decoder, self).__init__()
-#         self.mlp_head = nn.Sequential(
-#             nn.Linear(input_dim, hid_dim),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(hid_dim, 3)
-#         )
-#     def forward(self, x) -> torch.Tensor:
-#         pos = self.mlp_head(x)
-#         return pos # (B, N_S, G, 3)
-            
-# class Col_Decoder(nn.Module):
-#     def __init__(self, input_dim, hid_dim):
-#         super(Col_Decoder, self).__init__()
-#         self.mlp_head = nn.Sequential(
-#             nn.Linear(input_dim, hid_dim),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(hid_dim, 3)
-#         )
-#     def forward(self, x) -> torch.Tensor:
-#         color = self.mlp_head(x)
-#         return color # (B, N_S, G, 3)
-    
-# class Gs_Mask_Decoder(nn.Module):
-#     def __init__(self, input_dim, hid_dim):
-#         super(Gs_Mask_Decoder, self).__init__()
-#         self.mask_head = nn.Sequential(
-#             nn.Linear(input_dim, hid_dim),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(hid_dim, 1)
-#         )
+        local_color = self.col_head(out)
+        color = obj_color + local_color
 
-#     def forward(self, x) -> torch.Tensor:
-#         mask = self.mask_head(x)
-#         return mask # (B, N_S, G, 1)
+        return pos, color, mask # (B, N_S, G, 3*FRAME), (B, N_S, G, 3), (B, N_S, G, 1)
 
 class SlotAttentionAutoEncoder(nn.Module):
     # def __init__(self, resolution, num_slots, num_iters, hid_dim):
@@ -263,7 +262,7 @@ class SlotAttentionAutoEncoder(nn.Module):
         self.num_iters =  attn_cfg.num_iters
 
         self.frame_num = int(self.gs_dim / 7 - 1)
-        slot_dim = max(192, self.gs_dim)
+        slot_dim = max(256, self.gs_dim)
 
         self.encoder = Gs_Encoder(self.gs_dim,slot_dim, 3*self.frame_num, 3)
         
@@ -272,9 +271,10 @@ class SlotAttentionAutoEncoder(nn.Module):
             slot_dim=slot_dim,
             iters=self.num_iters,
             eps = 1e-8, 
-            hidden_dim = 192)
+            hidden_dim = 256)
         
-        self.decoder = Gs_Decoder(slot_dim, 64, self.frame_num)
+        self.obj_decoder = Object_Decoder(self.gs_dim,slot_dim, 34, self.frame_num)
+        self.gs_decoder = Gs_Decoder(self.gs_dim,slot_dim, 34, self.frame_num)
 
     def forward(self, gs:torch.Tensor, pe:torch.Tensor, pad_mask=None, isInference=False):
         """
@@ -290,6 +290,9 @@ class SlotAttentionAutoEncoder(nn.Module):
         # Slot Attention module.
         slots = self.slot_attention(x) # [B, N_S, D]
 
+        # Object decoder per slot
+        obj_track, obj_color, slots = self.obj_decoder(slots) # [B, N_S, D]
+
         # Broadcast pos to all slots
         pe = pe.unsqueeze(1).repeat(1,self.num_slots,1,1) # [B, N_S, G, 3]
 
@@ -298,7 +301,7 @@ class SlotAttentionAutoEncoder(nn.Module):
 
         # MLP detection head for color and mask
         # gs_slot, gs_mask = self.decoder(slots)
-        pos, color, gs_mask = self.decoder(slots, pe) # [B, N_S, G, D]
+        pos, color, gs_mask = self.gs_decoder(slots, pe, obj_track, obj_color) # [B, N_S, G, D]
 
         # Account for padding before softmax the gs mask
         if pad_mask is not None: pad_mask = pad_mask.unsqueeze(1)        
