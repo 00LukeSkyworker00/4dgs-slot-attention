@@ -215,7 +215,7 @@ class Renderer():
 
 
     def create_cmap(self,num_slot,device):
-        color_unit = 1.0 / float(num_slot-1)
+        color_unit = 1.0 / float(num_slot)
         cmap = plt.get_cmap('hsv')
         color_code = []
         for k in range(num_slot):

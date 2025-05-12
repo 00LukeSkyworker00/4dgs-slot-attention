@@ -1,7 +1,7 @@
 from torch import nn
 import torch
 import torch.nn.functional as F
-from renderer import *
+# from renderer import *
 from transforms import rot_to_mat4, to_homogeneous
 
 class SlotAttention(nn.Module):
@@ -135,7 +135,7 @@ class Gs_Encoder(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(slot_dim, slot_dim),
         )
-        self.embedding = Gs_Embedding(3,slot_dim)
+        self.embedding = Gs_Embedding(72,slot_dim)
 
 
     def forward(self, x, pe) -> torch.Tensor:
@@ -187,7 +187,7 @@ class Gs_Decoder(nn.Module):
     def __init__(self, gs_dim, slot_dim, hid_dim, frame_num):
         super(Gs_Decoder, self).__init__()
 
-        self.embedding = Gs_Embedding(3,slot_dim)
+        self.embedding = Gs_Embedding(72,slot_dim)
         self.frame_num = frame_num
 
         # self.shared_mlp = nn.Sequential(
@@ -337,13 +337,13 @@ class SlotAttentionAutoEncoder(nn.Module):
         out = input.masked_fill(mask==0, pad_value)
         return out
     
-class RasterizedSlotAttentionAutoEncoder(nn.Module):
-    def __init__(self, data_cfg, cnn_cfg, attn_cfg):
-        self.model = SlotAttentionAutoEncoder(data_cfg, cnn_cfg, attn_cfg)        
-        self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
+# class RasterizedSlotAttentionAutoEncoder(nn.Module):
+#     def __init__(self, data_cfg, cnn_cfg, attn_cfg):
+#         self.model = SlotAttentionAutoEncoder(data_cfg, cnn_cfg, attn_cfg)        
+#         self.renderer = Renderer(tuple(data_cfg.resolution), requires_grad=True)
 
-    def forward(self, gs:torch.Tensor, pe:torch.Tensor, Ks: torch.Tensor, w2cs: torch.Tensor, pad_mask=None):
-        gs_out, gs_slot, gs_mask, loss = self.model(gs,pe,pad_mask)
-        recon_combined, recon_slots = self.renderer.make_vid(gs_out, gs_slot, gs_mask, Ks, w2cs)
+#     def forward(self, gs:torch.Tensor, pe:torch.Tensor, Ks: torch.Tensor, w2cs: torch.Tensor, pad_mask=None):
+#         gs_out, gs_slot, gs_mask, loss = self.model(gs,pe,pad_mask)
+#         recon_combined, recon_slots = self.renderer.make_vid(gs_out, gs_slot, gs_mask, Ks, w2cs)
 
-        return recon_combined, recon_slots, loss
+#         return recon_combined, recon_slots, loss
