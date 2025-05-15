@@ -1,6 +1,7 @@
 *.pth
 *.npy
 *.mp4
+*.ipynb
 outputs/
 work_dirs/
 *__pycache__*
